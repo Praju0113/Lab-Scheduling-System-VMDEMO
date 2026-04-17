@@ -58,6 +58,19 @@ class QueueService:
         self.session.flush()
         return self.snapshot(lab_id)
 
+    def move_next_to_pending(self, lab_id: int) -> dict:
+        """Move NEXT patient to PENDING status."""
+        next_item = self._get_entry(lab_id, QueueEntryType.NEXT)
+        if next_item is not None:
+            next_item.queue_type = QueueEntryType.PENDING
+            next_item.pending_since = datetime.now(timezone.utc)
+            next_item.returned_at = None
+            _, test = self._find_test(next_item.test_item_id)
+            test.status = TestStatus.SCHEDULED
+            test.queue_status = QueueStatus.PENDING
+        self.session.flush()
+        return self.snapshot(lab_id)
+
     def accept_from_pending(self, lab_id: int, visit_test_id: int | None = None) -> dict:
         """Accept a pending patient - OR solver handles fairness via wait-time weighting."""
         if self._get_entry(lab_id, QueueEntryType.CURRENT) is not None:

@@ -155,6 +155,10 @@ export const frontendApi = {
     const response = await apiClient.post(`/queues/${stripPrefixedId(labId)}/move-current-to-pending`);
     return response.data;
   },
+  moveNextToPending: async (labId: string) => {
+    const response = await apiClient.post(`/queues/${stripPrefixedId(labId)}/move-next-to-pending`);
+    return response.data;
+  },
   acceptFromPending: async (labId: string, visit_test_id?: number) => {
     const response = await apiClient.post(
       `/queues/${stripPrefixedId(labId)}/accept-from-pending`,

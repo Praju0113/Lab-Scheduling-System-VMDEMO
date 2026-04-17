@@ -77,7 +77,7 @@ export default function LabSpecialistDashboard() {
     };
     applyQueueSnapshot(selectedLab.id, optimisticSnapshot);
     try {
-      const snapshot = await frontendApi.moveCurrentToPending(selectedLab.id);
+      const snapshot = await frontendApi.moveNextToPending(selectedLab.id);
       applyQueueSnapshot(selectedLab.id, snapshot);
       await refreshSelectedLabQueue(selectedLab.id);
     } catch (error) {
@@ -216,12 +216,12 @@ export default function LabSpecialistDashboard() {
             </div>
 
             <div className="grid grid-cols-3 gap-6">
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 ease-in-out min-h-[450px] flex flex-col">
                 <h3 className="text-xl mb-4 text-gray-900">Current Patient</h3>
                 {currentVisit ? (
-                  <div>
-                    <div className="bg-gradient-to-br from-[#e1d0ea] to-[#f3ebf7] rounded-xl p-6 mb-4">
-                      <h4 className="text-2xl mb-3 text-[#2a123d]">{currentVisit.patient_name}</h4>
+                  <div className="transition-all duration-300 ease-in-out flex-1 flex flex-col">
+                    <div className="bg-gradient-to-br from-[#e1d0ea] to-[#f3ebf7] rounded-xl p-6 mb-4 transition-all duration-300 ease-in-out flex-1">
+                      <h4 className="text-2xl mb-3 text-[#2a123d] truncate">{currentVisit.patient_name}</h4>
                       <div className="space-y-3 text-sm text-[#3a1852]">
                         <div>
                           <p className="text-[#5D2582] mb-1">Patient ID</p>
@@ -233,31 +233,31 @@ export default function LabSpecialistDashboard() {
                         </div>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button onClick={handleCompleteTest} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors">
+                    <div className="flex gap-2 mt-auto">
+                      <button onClick={handleCompleteTest} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-all duration-200 ease-in-out">
                         <CheckCircle className="w-5 h-5" />
                         Complete
                       </button>
-                      <button onClick={handleCurrentToPending} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors">
+                      <button onClick={handleCurrentToPending} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-all duration-200 ease-in-out">
                         <XCircle className="w-5 h-5" />
                         Pending
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-gray-50 rounded-xl p-12 text-center">
+                  <div className="bg-gray-50 rounded-xl p-12 text-center transition-all duration-300 ease-in-out">
                     <Clock className="w-16 h-16 text-gray-400 mx-auto mb-4" />
                     <p className="text-gray-600">No active patient</p>
                   </div>
                 )}
               </div>
 
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 ease-in-out min-h-[450px] flex flex-col">
                 <h3 className="text-xl mb-4 text-gray-900">Next Patient</h3>
                 {nextVisit ? (
-                  <div>
-                    <div className="bg-yellow-50 rounded-xl p-6 mb-4 border border-yellow-200">
-                      <h4 className="text-2xl mb-3 text-yellow-900">{nextVisit.patient_name}</h4>
+                  <div className="transition-all duration-300 ease-in-out flex-1 flex flex-col">
+                    <div className="bg-yellow-50 rounded-xl p-6 mb-4 border border-yellow-200 transition-all duration-300 ease-in-out flex-1">
+                      <h4 className="text-2xl mb-3 text-yellow-900 truncate">{nextVisit.patient_name}</h4>
                       <div className="space-y-3 text-sm text-yellow-800">
                         <div>
                           <p className="text-yellow-600 mb-1">Patient ID</p>
@@ -271,12 +271,12 @@ export default function LabSpecialistDashboard() {
                     </div>
 
                     {!currentVisit && (
-                      <div className="flex gap-2">
-                        <button onClick={handleAcceptNext} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1e68] transition-colors">
+                      <div className="flex gap-2 mt-auto">
+                        <button onClick={handleAcceptNext} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1e68] transition-all duration-200 ease-in-out">
                           <CheckCircle className="w-5 h-5" />
                           Accept
                         </button>
-                        <button onClick={handlePendingNext} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors">
+                        <button onClick={handlePendingNext} className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-all duration-200 ease-in-out">
                           <XCircle className="w-5 h-5" />
                           Pending
                         </button>
@@ -284,25 +284,25 @@ export default function LabSpecialistDashboard() {
                     )}
                   </div>
                 ) : (
-                  <div className="bg-gray-50 rounded-xl p-12 text-center">
+                  <div className="bg-gray-50 rounded-xl p-12 text-center transition-all duration-300 ease-in-out">
                     <Clock className="w-16 h-16 text-gray-400 mx-auto mb-4" />
                     <p className="text-gray-600">No patients in queue</p>
                   </div>
                 )}
               </div>
 
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 ease-in-out min-h-[450px] flex flex-col">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-xl text-gray-900">Waiting</h3>
                   <span className="px-3 py-1 bg-[#f3ebf7] text-[#5D2582] rounded-lg text-sm">{waitingCandidates.length}</span>
                 </div>
 
                 {waitingCandidates.length > 0 ? (
-                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-2">
+                  <div className="space-y-3 max-h-[380px] overflow-y-auto pr-2 flex-1">
                     {waitingCandidates.map((item) => {
                       const infoTone = item.is_queue_eligible ? 'border-gray-200 bg-white' : 'border-orange-200 bg-orange-50';
                       return (
-                        <div key={`${item.visit_id}-${item.visit_test_id}`} className={`border rounded-lg p-4 ${infoTone}`}>
+                        <div key={`${item.visit_id}-${item.visit_test_id}`} className={`border rounded-lg p-4 transition-all duration-300 ease-in-out ${infoTone}`}>
                           <div className="flex items-start justify-between gap-3">
                             <div>
                               <h4 className="text-gray-900">{item.patient_name}</h4>
@@ -320,6 +320,9 @@ export default function LabSpecialistDashboard() {
                                 minute: '2-digit',
                               })}
                             </p>
+                            {!item.is_queue_eligible && item.is_blocked && (
+                              <p className="text-red-700">Test Blocked</p>
+                            )}
                             {!item.is_queue_eligible && item.active_lab_name && item.active_queue_status && (
                               <p className="text-orange-700">Busy in {item.active_lab_name} ({item.active_queue_status})</p>
                             )}
@@ -333,19 +336,19 @@ export default function LabSpecialistDashboard() {
                     })}
                   </div>
                 ) : (
-                  <div className="bg-gray-50 rounded-xl p-12 text-center text-gray-500">No waiting candidates</div>
+                  <div className="bg-gray-50 rounded-xl p-12 text-center text-gray-500 transition-all duration-300 ease-in-out">No waiting candidates</div>
                 )}
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 transition-all duration-300 ease-in-out min-h-[300px]">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl text-gray-900">Pending Queue</h3>
                 <span className="px-4 py-2 bg-yellow-100 text-yellow-700 rounded-lg">{pendingQueueVisits.length} patients waiting</span>
               </div>
 
               {pendingQueueVisits.length > 0 ? (
-                <div className="grid grid-cols-5 gap-4 max-h-[400px] overflow-y-auto pr-2">
+                <div className="grid grid-cols-5 gap-4 max-h-[280px] overflow-y-auto pr-2">
                   {pendingQueueVisits.map(({ visit, test_name, visit_test_id }) => (
                     <div key={`${visit.id}-${visit_test_id}`} className="border rounded-lg p-4 border-gray-200 bg-white hover:shadow-md transition-shadow">
                       <h4 className="mb-2 text-gray-900">{visit.patient_name}</h4>

@@ -87,10 +87,12 @@ def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: Frontend
     preserved_tests: list[TestItem] = []
     editable_tests: list[TestItem] = []
     for test in visit.tests:
-        if test.status in {TestStatus.COMPLETED, TestStatus.IN_PROGRESS} or test.queue_status in {QueueStatus.WAITING, QueueStatus.CURRENT, QueueStatus.PENDING}:
-            preserved_tests.append(test)
-        else:
+        # Only WAITING tests can be edited or removed
+        # All other statuses are locked: COMPLETED, IN_PROGRESS, CURRENT, PENDING
+        if test.queue_status == QueueStatus.WAITING:
             editable_tests.append(test)
+        else:
+            preserved_tests.append(test)
 
     remaining_requested = Counter(payload.test_names)
     for test in preserved_tests:
@@ -372,6 +374,12 @@ async def accept_current(lab_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).accept_current(lab_id)
     db.commit()
+    # Trigger OR optimization to immediately fill the NEXT slot
+    or_scheduler = ORScheduler(db)
+    or_scheduler.run_optimization()
+    db.commit()
+    # Fetch updated snapshot with new NEXT patient
+    snapshot = QueueService(db, SchedulingService(db)).snapshot(lab_id)
     emit_nowait('queue.updated', {'labId': f'l{lab_id}', 'snapshot': snapshot})
     return snapshot
 
@@ -381,6 +389,17 @@ async def move_current_to_pending(lab_id: int, db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).move_current_to_pending(lab_id)
+    db.commit()
+    emit_nowait('queue.updated', {'labId': f'l{lab_id}', 'snapshot': snapshot})
+    emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
+    return snapshot
+
+
+@app.post('/api/queues/{lab_id}/move-next-to-pending')
+async def move_next_to_pending(lab_id: int, db: Session = Depends(get_db)):
+    if db.get(Lab, lab_id) is None:
+        raise HTTPException(status_code=404, detail='Lab queue not found')
+    snapshot = QueueService(db, SchedulingService(db)).move_next_to_pending(lab_id)
     db.commit()
     emit_nowait('queue.updated', {'labId': f'l{lab_id}', 'snapshot': snapshot})
     emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))

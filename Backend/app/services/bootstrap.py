@@ -120,30 +120,52 @@ def frontend_test_catalog() -> list[dict]:
 
 
 def waiting_candidates_payload(session: Session, lab_id: int) -> dict:
-    """Get eligible waiting candidates for a specific lab."""
-    lab_names = {lab.id: lab.name for lab in session.scalars(select(Lab)).all()}
-    visits = session.scalars(select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc())).all()
+    """
+    Get all patients with tests in the same category as the lab.
+    Exclude patients who are already in CURRENT or NEXT in any lab.
+    This is an informational view of the queue backlog for the lab category.
+    """
+    lab = session.get(Lab, lab_id)
+    if not lab:
+        return {'lab_id': f'l{lab_id}', 'items': []}
+    
+    lab_names = {l.id: l.name for l in session.scalars(select(Lab)).all()}
+    
+    # Find all patients with tests in CURRENT or NEXT status (excluded from waiting list)
+    current_and_next_visits = set()
+    current_next_tests = session.scalars(
+        select(QueueEntry)
+        .where(QueueEntry.queue_type.in_([QueueEntryType.CURRENT, QueueEntryType.NEXT]))
+    ).all()
+    for entry in current_next_tests:
+        current_and_next_visits.add(entry.visit_id)
     
     def check_dependencies_satisfied(visit: Visit, test: TestItem) -> bool:
         """Check if all prior tests for this visit are completed."""
-        # Find all tests in the same visit with lower sequence_order
         prior_tests = [t for t in visit.tests if t.sequence_order < test.sequence_order]
-        # All prior tests must be completed
         return all(t.status == TestStatus.COMPLETED for t in prior_tests)
+    
+    visits = session.scalars(select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc())).all()
     
     items: list[dict] = []
     for visit in visits:
+        # Skip if patient is already in CURRENT or NEXT in any lab
+        if visit.id in current_and_next_visits:
+            continue
+        
+        # Check if this visit has an active test in a different lab (WAITING/PENDING)
         active_test = next((test for test in visit.tests if test.queue_status in {QueueStatus.WAITING, QueueStatus.CURRENT, QueueStatus.PENDING}), None)
-        ordered_tests = sorted(visit.tests, key=lambda item: (item.sequence_order, item.id))
-        for test in ordered_tests:
-            if test.assigned_lab_id != lab_id:
+        
+        # Get all tests with same category as the lab, in WAITING status
+        for test in visit.tests:
+            if test.category != lab.category:
                 continue
             if test.status != TestStatus.SCHEDULED or test.queue_status != QueueStatus.WAITING:
                 continue
-            if test.is_blocked:
-                continue
+            
             dependencies_satisfied = check_dependencies_satisfied(visit, test)
-            is_queue_eligible = active_test is None and dependencies_satisfied
+            is_queue_eligible = active_test is None and dependencies_satisfied and not test.is_blocked
+            
             items.append({
                 'visit_id': visit.public_id,
                 'visit_test_id': test.id,
@@ -158,8 +180,9 @@ def waiting_candidates_payload(session: Session, lab_id: int) -> dict:
                 'active_lab_id': f'l{active_test.assigned_lab_id}' if active_test and active_test.assigned_lab_id else None,
                 'active_lab_name': lab_names.get(active_test.assigned_lab_id) if active_test and active_test.assigned_lab_id else None,
                 'is_dependency_blocked': not dependencies_satisfied,
+                'is_blocked': test.is_blocked,
             })
-            break
+    
     return {'lab_id': f'l{lab_id}', 'items': items}
 
 

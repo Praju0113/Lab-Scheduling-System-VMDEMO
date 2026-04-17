@@ -44,6 +44,7 @@ export interface WaitingCandidate {
   active_lab_id?: string | null;
   active_lab_name?: string | null;
   is_dependency_blocked?: boolean;
+  is_blocked?: boolean;
 }
 
 export interface Specialist {
