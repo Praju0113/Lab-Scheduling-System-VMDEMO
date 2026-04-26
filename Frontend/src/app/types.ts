@@ -64,6 +64,7 @@ export interface Lab {
   is_active: boolean;
   current_patient_id?: string | null;
   queue: string[];
+  waiting_count?: number;
 }
 
 export interface QueueItem {

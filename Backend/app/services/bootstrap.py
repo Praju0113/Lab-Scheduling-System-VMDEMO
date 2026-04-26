@@ -23,6 +23,29 @@ def _queue_item(item: QueueEntry | None) -> dict | None:
     }
 
 
+def _waiting_count_for_lab_category(session: Session, lab: Lab) -> int:
+    """
+    Count distinct patients waiting for the same lab category, excluding
+    patients already occupying CURRENT or NEXT queue slots in any lab.
+    """
+    current_and_next_visit_ids = set(
+        session.scalars(
+            select(QueueEntry.visit_id).where(QueueEntry.queue_type.in_([QueueEntryType.CURRENT, QueueEntryType.NEXT]))
+        ).all()
+    )
+
+    waiting_visit_ids = session.scalars(
+        select(TestItem.visit_id)
+        .where(
+            TestItem.category == lab.category,
+            TestItem.status == TestStatus.SCHEDULED,
+            TestItem.queue_status == QueueStatus.WAITING,
+        )
+    ).all()
+
+    return len({visit_id for visit_id in waiting_visit_ids if visit_id not in current_and_next_visit_ids})
+
+
 def queue_snapshot(session: Session, lab_id: int) -> dict:
     queue_entries = session.scalars(
         select(QueueEntry)
@@ -90,6 +113,7 @@ def frontend_lab(session: Session, lab: Lab) -> dict:
         'is_active': lab.is_active,
         'current_patient_id': snapshot['current']['visit_id'] if snapshot['current'] else None,
         'queue': queue_ids,
+        'waiting_count': _waiting_count_for_lab_category(session, lab),
         'updated_at': lab.updated_at,
     }
 

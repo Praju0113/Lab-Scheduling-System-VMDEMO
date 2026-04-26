@@ -429,6 +429,13 @@ export default function ReceptionistDashboard() {
                           <span className="text-sm text-gray-500">No patient in queue</span>
                         </div>
                       )}
+
+                      <button
+                        onClick={() => navigate(`/queue-display/lab/${lab.id}`)}
+                        className="mt-4 w-full rounded-lg bg-[#5D2582] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#4a1e68]"
+                      >
+                        Lab Queue Screen
+                      </button>
                     </div>
                   );
                 })}

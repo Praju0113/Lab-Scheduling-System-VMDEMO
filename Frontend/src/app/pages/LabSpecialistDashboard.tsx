@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { FlaskConical, LogOut, CheckCircle, Clock, XCircle } from 'lucide-react';
+import { FlaskConical, LogOut, CheckCircle, Clock, XCircle, Search } from 'lucide-react';
 import logo from '../../assets/Nueberg_Logo.png';
 import { Visit, Lab, WaitingCandidate } from '../types';
 import { useAppStore } from '../store/useAppStore';
@@ -25,6 +25,7 @@ export default function LabSpecialistDashboard() {
   const [selectedLab, setSelectedLab] = useState<Lab | null>(null);
   const [queueSnapshot, setQueueSnapshot] = useState<QueueSnapshot | null>(null);
   const [waitingCandidates, setWaitingCandidates] = useState<WaitingCandidate[]>([]);
+  const [pendingSearchTerm, setPendingSearchTerm] = useState('');
 
   const applyQueueSnapshot = (labId: string, snapshot: QueueSnapshot) => {
     setQueueSnapshot(snapshot);
@@ -51,6 +52,19 @@ export default function LabSpecialistDashboard() {
       return { visit, test_name: item.test_name ?? '-', visit_test_id: item.visit_test_id };
     })
     .filter((item): item is { visit: Visit; test_name: string; visit_test_id: number } => Boolean(item));
+
+  const filteredPendingQueueVisits = useMemo(() => {
+    const normalizedSearch = pendingSearchTerm.trim().toLowerCase();
+    if (!normalizedSearch) {
+      return pendingQueueVisits;
+    }
+
+    return pendingQueueVisits.filter(({ visit, test_name }) =>
+      visit.patient_name.toLowerCase().includes(normalizedSearch) ||
+      visit.id.toLowerCase().includes(normalizedSearch) ||
+      test_name.toLowerCase().includes(normalizedSearch),
+    );
+  }, [pendingQueueVisits, pendingSearchTerm]);
 
   const sortedLabs = [...labs].sort(compareByDisplayName);
 
@@ -140,6 +154,7 @@ export default function LabSpecialistDashboard() {
     } else {
       setQueueSnapshot(null);
       setWaitingCandidates([]);
+      setPendingSearchTerm('');
     }
   }, [selectedLab, labs, visits]);
 
@@ -348,27 +363,46 @@ export default function LabSpecialistDashboard() {
               </div>
 
               {pendingQueueVisits.length > 0 ? (
-                <div className="grid grid-cols-5 gap-4 max-h-[280px] overflow-y-auto pr-2">
-                  {pendingQueueVisits.map(({ visit, test_name, visit_test_id }) => (
-                    <div key={`${visit.id}-${visit_test_id}`} className="border rounded-lg p-4 border-gray-200 bg-white hover:shadow-md transition-shadow">
-                      <h4 className="mb-2 text-gray-900">{visit.patient_name}</h4>
-                      <p className="text-xs text-gray-500 mb-2">ID: {visit.id.toUpperCase()}</p>
-                      <div className="mb-3">
-                        <p className="text-xs text-gray-600 mb-1">Test:</p>
-                        <p className="text-sm text-gray-800">{test_name}</p>
-                      </div>
-                      <button
-                        onClick={() => void handleAcceptFromPending(visit_test_id)}
-                        disabled={currentVisit !== null}
-                        className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${currentVisit !== null ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-[#5D2582] text-white hover:bg-[#4a1e68]'}`}
-                      >
-                        Accept
-                      </button>
+                <>
+                  <div className="relative mb-4">
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      type="text"
+                      value={pendingSearchTerm}
+                      onChange={(event) => setPendingSearchTerm(event.target.value)}
+                      placeholder="Search by patient name, ID, or test..."
+                      className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                    />
+                  </div>
+
+                  {filteredPendingQueueVisits.length > 0 ? (
+                    <div className="grid grid-cols-5 gap-4 max-h-[280px] overflow-y-auto pr-2">
+                      {filteredPendingQueueVisits.map(({ visit, test_name, visit_test_id }) => (
+                        <div key={`${visit.id}-${visit_test_id}`} className="border rounded-lg p-4 border-gray-200 bg-white hover:shadow-md transition-shadow">
+                          <h4 className="mb-2 text-gray-900">{visit.patient_name}</h4>
+                          <p className="text-xs text-gray-500 mb-2">ID: {visit.id.toUpperCase()}</p>
+                          <div className="mb-3">
+                            <p className="text-xs text-gray-600 mb-1">Test:</p>
+                            <p className="text-sm text-gray-800">{test_name}</p>
+                          </div>
+                          <button
+                            onClick={() => void handleAcceptFromPending(visit_test_id)}
+                            disabled={currentVisit !== null}
+                            className={`w-full px-3 py-2 rounded-lg text-sm transition-colors ${currentVisit !== null ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-[#5D2582] text-white hover:bg-[#4a1e68]'}`}
+                          >
+                            Accept
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  ) : (
+                    <div className="text-center py-12 text-gray-500">No matching patients in pending queue</div>
+                  )}
+                </>
               ) : (
-                <div className="text-center py-12 text-gray-500">No patients in pending queue</div>
+                <div className="grid grid-cols-5 gap-4 max-h-[280px] overflow-y-auto pr-2">
+                  <div className="col-span-5 text-center py-12 text-gray-500">No patients in pending queue</div>
+                </div>
               )}
             </div>
           </div>

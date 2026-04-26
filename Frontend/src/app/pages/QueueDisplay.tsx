@@ -78,7 +78,7 @@ export default function QueueDisplay() {
           {sortedLabs.map((lab) => {
             const { currentVisit, nextVisit } = getLabQueue(lab.id);
             return (
-              <div key={lab.id} className="bg-white rounded-[14px] p-4 flex flex-col">
+              <div key={lab.id} className="bg-white rounded-[14px] p-4 flex flex-col relative min-h-[180px]">
                 <div className="text-center mb-2 mt-1">
                   <h3 className="text-black font-extrabold text-[22px] tracking-tight">{lab.name}</h3>
                 </div>
@@ -94,6 +94,10 @@ export default function QueueDisplay() {
                     {nextVisit ? <p className="text-[#ff9800] font-bold text-[22px] tracking-tight">{nextVisit.id.toUpperCase()}</p> : <p className="text-gray-300 text-sm font-bold">-</p>}
                   </div>
                 </div>
+                <div className="absolute bottom-3 right-3 flex items-center gap-2 rounded-lg bg-[#f3ebf7] px-3 py-1.5">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-[#5D2582]">Waiting</span>
+                  <span className="text-[18px] font-extrabold leading-none text-[#5D2582]">{lab.waiting_count ?? 0}</span>
+                </div>
               </div>
             );
           })}
@@ -102,4 +106,3 @@ export default function QueueDisplay() {
     </div>
   );
 }
-

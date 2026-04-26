@@ -4,6 +4,7 @@ import ReceptionistDashboard from "./pages/ReceptionistDashboard";
 import LabSpecialistDashboard from "./pages/LabSpecialistDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
 import QueueDisplay from "./pages/QueueDisplay";
+import LabSpecificQueueDisplay from "./pages/LabSpecificQueueDisplay";
 
 import { ProtectedRoute } from "./components/ProtectedRoute";
 
@@ -45,5 +46,9 @@ export const router = createBrowserRouter([
   {
     path: "/queue-display",
     Component: QueueDisplay,
+  },
+  {
+    path: "/queue-display/lab/:labId",
+    Component: LabSpecificQueueDisplay,
   },
 ]);
