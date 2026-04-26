@@ -50,7 +50,7 @@ interface AppState {
   createVisit: (payload: VisitPayload) => Promise<void>;
   saveVisit: (id: string | null, payload: VisitPayload) => Promise<void>;
   saveSpecialist: (id: string | null, payload: Omit<Specialist, 'id'>) => Promise<void>;
-  saveLab: (id: string | null, payload: Omit<Lab, 'id' | 'queue' | 'current_patient_id'>) => Promise<void>;
+  saveLab: (id: string | null, payload: Omit<Lab, 'id' | 'queue' | 'current_patient_id' | 'waiting_count'>) => Promise<void>;
   deleteSpecialist: (id: string) => Promise<void>;
   deleteLab: (id: string) => Promise<void>;
 }

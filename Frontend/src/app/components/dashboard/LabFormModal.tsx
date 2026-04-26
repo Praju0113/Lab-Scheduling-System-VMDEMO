@@ -11,6 +11,8 @@ const labSchema = z.object({
   name: z.string().min(1, 'Lab Name is required'),
   category: z.string().min(1, 'Lab Category is required'),
   floor: z.string().min(1, 'Floor is required'),
+  opening_time: z.string().min(1, 'Opening time is required'),
+  closing_time: z.string().min(1, 'Closing time is required'),
   specialist_id: z.string().optional(),
   is_active: z.boolean().default(true),
 });
@@ -50,6 +52,8 @@ export function LabFormModal({
         name: editingLab.name,
         category: editingLab.category,
         floor: editingLab.floor,
+        opening_time: editingLab.opening_time || '07:00',
+        closing_time: editingLab.closing_time || '19:00',
         specialist_id: editingLab.specialist_id || '',
         is_active: editingLab.is_active,
       });
@@ -59,6 +63,8 @@ export function LabFormModal({
       name: '',
       category: '',
       floor: 'Ground Floor',
+      opening_time: '07:00',
+      closing_time: '19:00',
       specialist_id: '',
       is_active: true,
     });
@@ -119,6 +125,27 @@ export function LabFormModal({
             ))}
           </select>
           {errors.specialist_id && <p className="text-red-500 text-xs mt-1">{errors.specialist_id.message}</p>}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Opening Time</label>
+            <input
+              {...register('opening_time')}
+              type="time"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+            />
+            {errors.opening_time && <p className="text-red-500 text-xs mt-1">{errors.opening_time.message}</p>}
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Closing Time</label>
+            <input
+              {...register('closing_time')}
+              type="time"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+            />
+            {errors.closing_time && <p className="text-red-500 text-xs mt-1">{errors.closing_time.message}</p>}
+          </div>
         </div>
 
         <ToggleButton

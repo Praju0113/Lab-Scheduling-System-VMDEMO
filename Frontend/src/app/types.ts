@@ -60,6 +60,8 @@ export interface Lab {
   name: string;
   category: LabCategory;
   floor: string;
+  opening_time?: string;
+  closing_time?: string;
   specialist_id?: string | null;
   is_active: boolean;
   current_patient_id?: string | null;

@@ -635,6 +635,8 @@ export default function ReceptionistDashboard() {
             name: data.name,
             category: data.category,
             floor: data.floor,
+            opening_time: data.opening_time,
+            closing_time: data.closing_time,
             specialist_id: data.specialist_id,
             is_active: data.is_active,
           }).then(() => {

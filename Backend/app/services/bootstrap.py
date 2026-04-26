@@ -109,6 +109,8 @@ def frontend_lab(session: Session, lab: Lab) -> dict:
         'name': lab.name,
         'category': lab.category,
         'floor': lab.floor,
+        'opening_time': lab.opening_time.strftime('%H:%M'),
+        'closing_time': lab.closing_time.strftime('%H:%M'),
         'specialist_id': f's{lab.specialist_id}' if lab.specialist_id else None,
         'is_active': lab.is_active,
         'current_patient_id': snapshot['current']['visit_id'] if snapshot['current'] else None,

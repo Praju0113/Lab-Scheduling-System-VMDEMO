@@ -100,6 +100,8 @@ export const frontendApi = {
     name: string;
     category: string;
     floor: string;
+    opening_time: string;
+    closing_time: string;
     specialist_id?: string | null;
     is_active: boolean;
   }) => {
@@ -108,8 +110,8 @@ export const frontendApi = {
       category: payload.category,
       floor: payload.floor,
       room_number: payload.name.replace(/\s+/g, '-').slice(0, 32) || 'AUTO',
-      opening_time: '07:00:00',
-      closing_time: '19:00:00',
+      opening_time: `${payload.opening_time}:00`,
+      closing_time: `${payload.closing_time}:00`,
       cleanup_duration_minutes: 0,
       is_active: payload.is_active,
       specialist_id: stripPrefixedId(payload.specialist_id) ? Number(stripPrefixedId(payload.specialist_id)) : null,
@@ -122,6 +124,8 @@ export const frontendApi = {
       name: string;
       category: string;
       floor: string;
+      opening_time: string;
+      closing_time: string;
       specialist_id?: string | null;
       is_active: boolean;
     }
@@ -130,6 +134,8 @@ export const frontendApi = {
       name: payload.name,
       category: payload.category,
       floor: payload.floor,
+      opening_time: `${payload.opening_time}:00`,
+      closing_time: `${payload.closing_time}:00`,
       is_active: payload.is_active,
       specialist_id: stripPrefixedId(payload.specialist_id) ? Number(stripPrefixedId(payload.specialist_id)) : null,
     });
