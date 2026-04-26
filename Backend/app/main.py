@@ -9,12 +9,12 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import Lab, QueueEntry, QueueStatus, Specialist, TestItem, TestStatus, Visit
+from app.models import Lab, LabGroup, QueueEntry, QueueStatus, Specialist, TestItem, TestStatus, Visit
 from app.realtime import emit_nowait, mount
-from app.schemas import AcceptPendingPayload, DeltaResponse, FrontendPatientPayload, LabPayload, SpecialistPayload, VisitListResponse, VisitPayload
+from app.schemas import AcceptPendingPayload, DeltaResponse, FrontendPatientPayload, LabGroupPayload, LabPayload, SpecialistPayload, VisitListResponse, VisitPayload
 from app.seed import reset_database, seed_database
 from app.catalog import test_catalog_map
-from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_specialist, frontend_test_catalog, frontend_visit, paginated_visits, waiting_candidates_payload
+from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_specialist, frontend_test_catalog, frontend_visit, paginated_visits, waiting_candidates_payload
 from app.services.patient_ids import build_patient_id, extract_sequence, patient_id_date
 from app.services.queue import QueueService
 from app.services.scheduling import SchedulingService
@@ -38,6 +38,7 @@ def _ensure_schema() -> None:
         connection.execute(text("ALTER TABLE visits ADD COLUMN IF NOT EXISTS phone VARCHAR(20)"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS priority_flag VARCHAR(20) DEFAULT 'NONE' NOT NULL"))
+        connection.execute(text("ALTER TABLE labs ADD COLUMN IF NOT EXISTS group_id INTEGER"))
 
 
 @app.on_event('startup')
@@ -321,6 +322,43 @@ async def create_lab(payload: LabPayload, db: Session = Depends(get_db)):
     response = frontend_lab(db, lab)
     emit_nowait('lab.updated', response)
     emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
+    return response
+
+
+@app.post('/api/lab-groups')
+async def create_lab_group(payload: LabGroupPayload, db: Session = Depends(get_db)):
+    if len(payload.lab_ids) < 2:
+        raise HTTPException(status_code=400, detail='At least two labs are required to create a group')
+
+    labs = db.scalars(select(Lab).where(Lab.id.in_(payload.lab_ids))).all()
+    if len(labs) != len(set(payload.lab_ids)):
+        raise HTTPException(status_code=404, detail='One or more labs were not found')
+
+    categories = {lab.category for lab in labs}
+    if len(categories) != 1 or payload.category not in categories:
+        raise HTTPException(status_code=400, detail='All labs in a group must belong to the same category')
+
+    already_grouped = [lab.name for lab in labs if lab.group_id is not None]
+    if already_grouped:
+        raise HTTPException(status_code=400, detail=f'Labs already grouped: {", ".join(already_grouped)}')
+
+    group = LabGroup(name=payload.name, category=payload.category)
+    db.add(group)
+    db.flush()
+
+    for lab in labs:
+        lab.group_id = group.id
+
+    db.commit()
+    db.refresh(group)
+    group = db.scalar(select(LabGroup).where(LabGroup.id == group.id).options(selectinload(LabGroup.labs))) or group
+    response = {
+        'group': frontend_lab_group(db, group),
+        'labs': [frontend_lab(db, lab) for lab in labs],
+    }
+    emit_nowait('group.updated', response['group'])
+    for lab_payload in response['labs']:
+        emit_nowait('lab.updated', lab_payload)
     return response
 
 

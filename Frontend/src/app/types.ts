@@ -70,9 +70,18 @@ export interface Lab {
   opening_time?: string;
   closing_time?: string;
   specialist_id?: string | null;
+  group_id?: string | null;
   is_active: boolean;
   current_patient_id?: string | null;
   queue: string[];
+  waiting_count?: number;
+}
+
+export interface LabGroup {
+  id: string;
+  name: string;
+  category: LabCategory;
+  lab_ids: string[];
   waiting_count?: number;
 }
 

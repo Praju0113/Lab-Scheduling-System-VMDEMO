@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Lab, Specialist, TestPriorityFlag, Visit } from '../types';
+import { Lab, LabGroup, Specialist, TestPriorityFlag, Visit } from '../types';
 import { frontendApi, FrontendDeltaResponse } from '../api/frontend';
 
 interface VisitPayload {
@@ -38,11 +38,13 @@ const upsertById = <T extends { id: string }>(items: T[], nextItem: T) => {
 interface AppState {
   visits: Visit[];
   labs: Lab[];
+  groups: LabGroup[];
   specialists: Specialist[];
   isLoading: boolean;
   lastDeltaAt: Date | null;
   setVisits: (visits: Visit[]) => void;
   setLabs: (labs: Lab[]) => void;
+  setGroups: (groups: LabGroup[]) => void;
   setSpecialists: (specialists: Specialist[]) => void;
   initializeData: () => Promise<void>;
   mergeDelta: (payload: FrontendDeltaResponse) => void;
@@ -50,6 +52,7 @@ interface AppState {
   updateVisitStatus: (id: string, status: Visit['status']) => void;
   createVisit: (payload: VisitPayload) => Promise<void>;
   saveVisit: (id: string | null, payload: VisitPayload) => Promise<void>;
+  saveLabGroup: (payload: { name: string; category: string; lab_ids: string[] }) => Promise<void>;
   saveSpecialist: (id: string | null, payload: Omit<Specialist, 'id'>) => Promise<void>;
   saveLab: (id: string | null, payload: Omit<Lab, 'id' | 'queue' | 'current_patient_id' | 'waiting_count'>) => Promise<void>;
   deleteSpecialist: (id: string) => Promise<void>;
@@ -59,12 +62,14 @@ interface AppState {
 export const useAppStore = create<AppState>((set) => ({
   visits: [],
   labs: [],
+  groups: [],
   specialists: [],
   isLoading: false,
   lastDeltaAt: null,
 
   setVisits: (visits) => set({ visits: sortVisits(visits) }),
   setLabs: (labs) => set({ labs: sortLabs(labs) }),
+  setGroups: (groups) => set({ groups: [...groups].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })) }),
   setSpecialists: (specialists) => set({ specialists: sortSpecialists(specialists) }),
   initializeData: async () => {
     set({ isLoading: true });
@@ -73,6 +78,7 @@ export const useAppStore = create<AppState>((set) => ({
       set({
         visits: sortVisits(data.visits),
         labs: sortLabs(data.labs),
+        groups: [...(data.groups ?? [])].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
         specialists: sortSpecialists(data.specialists),
         lastDeltaAt: new Date(),
         isLoading: false,
@@ -86,6 +92,7 @@ export const useAppStore = create<AppState>((set) => ({
   mergeDelta: (payload) => set((state) => {
     let visits = [...state.visits];
     let labs = [...state.labs];
+    let groups = [...state.groups];
     let specialists = [...state.specialists];
 
     for (const visit of payload.visits ?? []) {
@@ -94,6 +101,9 @@ export const useAppStore = create<AppState>((set) => ({
     for (const lab of payload.labs ?? []) {
       labs = upsertById(labs, lab);
     }
+    for (const group of payload.groups ?? []) {
+      groups = upsertById(groups, group);
+    }
     for (const specialist of payload.specialists ?? []) {
       specialists = upsertById(specialists, specialist);
     }
@@ -101,6 +111,7 @@ export const useAppStore = create<AppState>((set) => ({
     return {
       visits: sortVisits(visits),
       labs: sortLabs(labs),
+      groups: [...groups].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
       specialists: sortSpecialists(specialists),
       lastDeltaAt: payload.now ? new Date(payload.now) : state.lastDeltaAt,
     };
@@ -135,6 +146,14 @@ export const useAppStore = create<AppState>((set) => ({
   saveVisit: async (id, payload) => {
     const visit = id ? await frontendApi.updatePatient(id, payload) : await frontendApi.createPatient(payload);
     set((state) => ({ visits: sortVisits(upsertById(state.visits, visit)) }));
+  },
+
+  saveLabGroup: async (payload) => {
+    const response = await frontendApi.createLabGroup(payload);
+    set((state) => ({
+      groups: [...upsertById(state.groups, response.group)].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })),
+      labs: sortLabs(response.labs.reduce((accumulator, lab) => upsertById(accumulator, lab), [...state.labs])),
+    }));
   },
 
   saveSpecialist: async (id, payload) => {

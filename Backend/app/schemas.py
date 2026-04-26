@@ -26,6 +26,12 @@ class LabPayload(BaseModel):
     specialist_id: int | None = None
 
 
+class LabGroupPayload(BaseModel):
+    name: str
+    category: str
+    lab_ids: list[int] = Field(default_factory=list)
+
+
 class VisitPayload(BaseModel):
     phr_reference_id: str
     patient_name: str
@@ -70,5 +76,6 @@ class DeltaResponse(BaseModel):
     now: datetime
     visits: list[dict[str, Any]]
     labs: list[dict[str, Any]]
+    groups: list[dict[str, Any]]
     specialists: list[dict[str, Any]]
     metrics: dict[str, Any]

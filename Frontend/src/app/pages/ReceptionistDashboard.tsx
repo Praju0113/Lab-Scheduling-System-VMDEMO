@@ -26,8 +26,9 @@ import { Modal } from '../components/dashboard/Modal';
 import { useAuthStore } from '../store/useAuthStore';
 import { SpecialistFormModal } from '../components/dashboard/SpecialistFormModal';
 import { LabFormModal } from '../components/dashboard/LabFormModal';
+import { LabGroupFormModal } from '../components/dashboard/LabGroupFormModal';
 import { PatientFormData, PatientFormModal } from '../components/dashboard/PatientFormModal';
-import { Gender, Lab, Specialist, TestCatalogItem, Visit } from '../types';
+import { Gender, Lab, LabGroup, Specialist, TestCatalogItem, Visit } from '../types';
 import { frontendApi } from '../api/frontend';
 
 type TabType = 'dashboard' | 'patients' | 'waiting' | 'labs' | 'config';
@@ -44,11 +45,13 @@ export default function ReceptionistDashboard() {
   const {
     visits,
     labs,
+    groups,
     specialists,
     deleteSpecialist,
     deleteLab,
     saveSpecialist,
     saveLab,
+    saveLabGroup,
     saveVisit,
     initializeData,
     isLoading,
@@ -58,6 +61,7 @@ export default function ReceptionistDashboard() {
   const [filterLabCategory, setFilterLabCategory] = useState<string>('All');
   const [showSpecialistModal, setShowSpecialistModal] = useState(false);
   const [showLabModal, setShowLabModal] = useState(false);
+  const [showLabGroupModal, setShowLabGroupModal] = useState(false);
   const [showPatientModal, setShowPatientModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [editingSpecialist, setEditingSpecialist] = useState<Specialist | null>(null);
@@ -103,8 +107,11 @@ export default function ReceptionistDashboard() {
   );
 
   const sortedLabs = useMemo(() => [...labs].sort(compareByDisplayName), [labs]);
+  const sortedGroups = useMemo(() => [...groups].sort(compareByDisplayName), [groups]);
   const sortedSpecialists = useMemo(() => [...specialists].sort(compareByDisplayName), [specialists]);
   const labNameById = useMemo(() => new Map(labs.map((lab) => [lab.id, lab.name])), [labs]);
+  const groupNameById = useMemo(() => new Map(groups.map((group) => [group.id, group.name])), [groups]);
+  const ungroupedLabs = useMemo(() => sortedLabs.filter((lab) => !lab.group_id), [sortedLabs]);
 
   const filteredVisits = useMemo(
     () =>
@@ -383,7 +390,45 @@ export default function ReceptionistDashboard() {
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
               <h2 className="text-2xl mb-6 text-gray-900">Live Lab Monitoring</h2>
               <div className="grid grid-cols-3 gap-6 max-h-[calc(100vh-350px)] overflow-y-auto pr-2">
-                {sortedLabs.map((lab) => {
+                {sortedGroups.map((group) => {
+                  const groupLabs = sortedLabs.filter((lab) => lab.group_id === group.id);
+                  return (
+                    <div key={group.id} className="bg-white border-2 rounded-lg p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h3 className="text-lg text-black">{group.name}</h3>
+                          <p className="text-sm text-gray-700">{group.category}</p>
+                        </div>
+                        <div className="px-3 py-1 rounded-full text-sm bg-[#f3ebf7] text-[#5D2582]">
+                          {group.waiting_count ?? 0} Waiting
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 mb-4">
+                        <div className="flex items-center gap-2 text-sm text-gray-700">
+                          <FlaskConical className="w-4 h-4" />
+                          <span>{groupLabs.length} Labs in Group</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {groupLabs.map((lab) => (
+                            <span key={`${group.id}-${lab.id}`} className="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
+                              {lab.name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => navigate(`/queue-display/group/${group.id}`)}
+                        className="mt-4 w-full rounded-lg bg-[#5D2582] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#4a1e68]"
+                      >
+                        Group Screen
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {ungroupedLabs.map((lab) => {
                   const currentVisit = visits.find((visit) => visit.id === lab.current_patient_id);
                   const nextVisitId = lab.queue[0];
                   const nextVisit = nextVisitId ? visits.find((visit) => visit.id === nextVisitId) : undefined;
@@ -517,16 +562,24 @@ export default function ReceptionistDashboard() {
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <div className="flex items-center justify-between mb-6">
                   <h2 className="text-2xl text-gray-900">Lab Management</h2>
-                  <button
-                    onClick={() => {
-                      setEditingLab(null);
-                      setShowLabModal(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1e68] transition-colors"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Add Lab
-                  </button>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowLabGroupModal(true)}
+                      className="px-4 py-2 border border-[#5D2582] text-[#5D2582] rounded-lg hover:bg-[#f3ebf7] transition-colors"
+                    >
+                      Create Lab Groups
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingLab(null);
+                        setShowLabModal(true);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1e68] transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add Lab
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-4 max-h-[calc(100vh-380px)] overflow-y-auto pr-2">
@@ -560,6 +613,7 @@ export default function ReceptionistDashboard() {
                         <div className="space-y-1 text-sm text-gray-600">
                           <p>Floor: {lab.floor}</p>
                           <p>Specialist: {specialist?.name ?? '-'}</p>
+                          <p>Group: {lab.group_id ? groupNameById.get(lab.group_id) ?? '-' : 'Ungrouped'}</p>
                           <p>Status: {lab.is_active ? 'Active' : 'Inactive'}</p>
                         </div>
                       </div>
@@ -643,6 +697,17 @@ export default function ReceptionistDashboard() {
           }).then(() => {
             setShowLabModal(false);
             setEditingLab(null);
+          });
+        }}
+      />
+
+      <LabGroupFormModal
+        isOpen={showLabGroupModal}
+        onClose={() => setShowLabGroupModal(false)}
+        labs={labs}
+        onSave={(data) => {
+          void saveLabGroup(data).then(() => {
+            setShowLabGroupModal(false);
           });
         }}
       />

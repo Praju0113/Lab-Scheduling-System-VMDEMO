@@ -45,6 +45,18 @@ class Specialist(Base):
     labs = relationship('Lab', back_populates='specialist')
 
 
+class LabGroup(Base):
+    __tablename__ = 'lab_groups'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    category: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    labs = relationship('Lab', back_populates='group')
+
+
 class Lab(Base):
     __tablename__ = 'labs'
 
@@ -59,10 +71,12 @@ class Lab(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     supported_test_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     specialist_id: Mapped[int | None] = mapped_column(ForeignKey('specialists.id', ondelete='SET NULL'), index=True)
+    group_id: Mapped[int | None] = mapped_column(ForeignKey('lab_groups.id', ondelete='SET NULL'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     specialist = relationship('Specialist', back_populates='labs')
+    group = relationship('LabGroup', back_populates='labs')
     queue_entries = relationship('QueueEntry', back_populates='lab', cascade='all, delete-orphan')
 
 

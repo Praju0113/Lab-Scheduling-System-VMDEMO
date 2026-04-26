@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Lab, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
+from app.models import Lab, LabGroup, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
 from app.catalog import build_test_catalog
 from app.services.scheduling import SchedulingService
 
@@ -38,6 +38,28 @@ def _waiting_count_for_lab_category(session: Session, lab: Lab) -> int:
         select(TestItem.visit_id)
         .where(
             TestItem.category == lab.category,
+            TestItem.status == TestStatus.SCHEDULED,
+            TestItem.queue_status == QueueStatus.WAITING,
+        )
+    ).all()
+
+    return len({visit_id for visit_id in waiting_visit_ids if visit_id not in current_and_next_visit_ids})
+
+
+def _waiting_count_for_group(session: Session, group: LabGroup) -> int:
+    current_and_next_visit_ids = set(
+        session.scalars(
+            select(QueueEntry.visit_id).where(QueueEntry.queue_type.in_([QueueEntryType.CURRENT, QueueEntryType.NEXT]))
+        ).all()
+    )
+    group_lab_ids = [lab.id for lab in group.labs]
+    if not group_lab_ids:
+        return 0
+
+    waiting_visit_ids = session.scalars(
+        select(TestItem.visit_id)
+        .where(
+            TestItem.assigned_lab_id.in_(group_lab_ids),
             TestItem.status == TestStatus.SCHEDULED,
             TestItem.queue_status == QueueStatus.WAITING,
         )
@@ -119,11 +141,24 @@ def frontend_lab(session: Session, lab: Lab) -> dict:
         'opening_time': lab.opening_time.strftime('%H:%M'),
         'closing_time': lab.closing_time.strftime('%H:%M'),
         'specialist_id': f's{lab.specialist_id}' if lab.specialist_id else None,
+        'group_id': f'g{lab.group_id}' if lab.group_id else None,
         'is_active': lab.is_active,
         'current_patient_id': snapshot['current']['visit_id'] if snapshot['current'] else None,
         'queue': queue_ids,
         'waiting_count': _waiting_count_for_lab_category(session, lab),
         'updated_at': lab.updated_at,
+    }
+
+
+def frontend_lab_group(session: Session, group: LabGroup) -> dict:
+    ordered_labs = sorted(group.labs, key=lambda lab: lab.name.lower())
+    return {
+        'id': f'g{group.id}',
+        'name': group.name,
+        'category': group.category,
+        'lab_ids': [f'l{lab.id}' for lab in ordered_labs],
+        'waiting_count': _waiting_count_for_group(session, group),
+        'updated_at': group.updated_at,
     }
 
 
@@ -221,11 +256,13 @@ def waiting_candidates_payload(session: Session, lab_id: int) -> dict:
 
 def bootstrap_payload(session: Session) -> dict:
     visits = session.scalars(select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc())).all()
-    labs = session.scalars(select(Lab).order_by(Lab.id.asc())).all()
+    labs = session.scalars(select(Lab).options(selectinload(Lab.group)).order_by(Lab.id.asc())).all()
+    groups = session.scalars(select(LabGroup).options(selectinload(LabGroup.labs)).order_by(LabGroup.id.asc())).all()
     specialists = session.scalars(select(Specialist).order_by(Specialist.id.asc())).all()
     return {
         'visits': [frontend_visit(visit) for visit in visits],
         'labs': [frontend_lab(session, lab) for lab in labs],
+        'groups': [frontend_lab_group(session, group) for group in groups],
         'specialists': [frontend_specialist(item) for item in specialists],
     }
 
@@ -283,17 +320,20 @@ def delta_payload(session: Session, since: datetime | None = None) -> dict:
     now = datetime.now(timezone.utc)
     if since is None:
         visits = session.scalars(select(Visit).options(selectinload(Visit.tests))).all()
-        labs = session.scalars(select(Lab)).all()
+        labs = session.scalars(select(Lab).options(selectinload(Lab.group))).all()
+        groups = session.scalars(select(LabGroup).options(selectinload(LabGroup.labs))).all()
         specialists = session.scalars(select(Specialist)).all()
     else:
         visits = session.scalars(select(Visit).where(Visit.updated_at >= since).options(selectinload(Visit.tests))).all()
-        labs = session.scalars(select(Lab).where(Lab.updated_at >= since)).all()
+        labs = session.scalars(select(Lab).where(Lab.updated_at >= since).options(selectinload(Lab.group))).all()
+        groups = session.scalars(select(LabGroup).where(LabGroup.updated_at >= since).options(selectinload(LabGroup.labs))).all()
         specialists = session.scalars(select(Specialist).where(Specialist.updated_at >= since)).all()
     return {
         'since': since,
         'now': now,
         'visits': [frontend_visit(visit) for visit in visits],
         'labs': [frontend_lab(session, lab) for lab in labs],
+        'groups': [frontend_lab_group(session, group) for group in groups],
         'specialists': [frontend_specialist(item) for item in specialists],
         'metrics': admin_dashboard_payload(session),
     }

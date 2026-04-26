@@ -4,6 +4,7 @@ import { TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
 export interface FrontendBootstrapResponse {
   visits: any[];
   labs: any[];
+  groups: any[];
   specialists: any[];
 }
 
@@ -12,6 +13,7 @@ export interface FrontendDeltaResponse {
   now: Date;
   visits: any[];
   labs: any[];
+  groups: any[];
   specialists: any[];
   metrics: any;
 }
@@ -146,6 +148,18 @@ export const frontendApi = {
   deleteLab: async (labId: string) => {
     const response = await apiClient.delete(`/labs/${stripPrefixedId(labId)}`);
     return response.data;
+  },
+  createLabGroup: async (payload: {
+    name: string;
+    category: string;
+    lab_ids: string[];
+  }) => {
+    const response = await apiClient.post('/lab-groups', {
+      name: payload.name,
+      category: payload.category,
+      lab_ids: payload.lab_ids.map((labId) => Number(stripPrefixedId(labId))),
+    });
+    return response.data as { group: any; labs: any[] };
   },
   getWaitingCandidates: async (labId: string) => {
     const response = await apiClient.get<{ lab_id: string; items: WaitingCandidate[] }>(`/labs/${stripPrefixedId(labId)}/waiting-candidates`);

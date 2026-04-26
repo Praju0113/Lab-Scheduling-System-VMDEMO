@@ -6,6 +6,7 @@ import { useAppStore } from '../store/useAppStore';
 
 const DELTA_EVENT_NAMES = [
   'lab.updated',
+  'group.updated',
   'visit.updated',
   'specialist.updated',
   'dashboard.metrics.updated',
