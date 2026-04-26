@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { TestCatalogItem, WaitingCandidate } from '../types';
+import { TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
 
 export interface FrontendBootstrapResponse {
   visits: any[];
@@ -47,6 +47,7 @@ export const frontendApi = {
     priority_type: string;
     phone: string;
     test_names: string[];
+    test_details?: Array<{ test_name: string; priority_flag: TestPriorityFlag }>;
   }) => {
     const response = await apiClient.post('/frontend/patients', payload);
     return response.data;
@@ -58,6 +59,7 @@ export const frontendApi = {
     priority_type: string;
     phone: string;
     test_names: string[];
+    test_details?: Array<{ test_name: string; priority_flag: TestPriorityFlag }>;
   }) => {
     const response = await apiClient.patch(`/frontend/patients/${visitId}`, payload);
     return response.data;

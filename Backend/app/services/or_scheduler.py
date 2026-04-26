@@ -4,7 +4,7 @@ Optimizes patient flow through labs using mathematical constraints.
 """
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from ortools.sat.python import cp_model
@@ -41,6 +41,12 @@ class TestConstraints:
         'high': 50,   # Young, mobile patients
         'medium': 20, # Normal mobility
         'low': 5,     # Elderly or mobility issues
+    }
+
+    TEST_PRIORITY_BONUS = {
+        'NONE': 0,
+        'PRIORITY': 2,
+        'HIGH_PRIORITY': 4,
     }
 
 
@@ -173,6 +179,11 @@ class ORScheduler:
         arrival_aware = visit.arrival_time if visit.arrival_time.tzinfo else visit.arrival_time.replace(tzinfo=timezone.utc).astimezone()
         wait_minutes = (now_aware - arrival_aware).total_seconds() / 60
         score += int(wait_minutes * 10)  # 10 points per minute waited
+
+        # Soft per-test preference only. Keep this bonus intentionally small so it
+        # helps choose among a patient's own feasible tests without materially
+        # promoting that patient over earlier patients.
+        score += self.constraints.TEST_PRIORITY_BONUS.get(test_item.priority_flag or 'NONE', 0)
 
         return score
 

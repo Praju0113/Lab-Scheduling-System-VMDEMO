@@ -5,6 +5,12 @@ export type LabCategory = DefinedLabCategory | string;
 export type VisitStatus = 'Waiting' | 'Pending' | 'Blocked' | 'Completed';
 export type Gender = 'Male' | 'Female' | 'Other';
 export type PriorityType = 'NORMAL' | 'EMERGENCY';
+export type TestPriorityFlag = 'NONE' | 'PRIORITY' | 'HIGH_PRIORITY';
+
+export interface VisitTestDetail {
+  test_name: string;
+  priority_flag: TestPriorityFlag;
+}
 
 export interface Visit {
   id: string;
@@ -14,6 +20,7 @@ export interface Visit {
   phone: string;
   priority_type?: PriorityType;
   tests: string[];
+  test_details?: VisitTestDetail[];
   status: VisitStatus;
   lab_id?: string | null;
   arrival_time: Date | string;

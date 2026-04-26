@@ -89,6 +89,13 @@ def frontend_visit(visit: Visit) -> dict:
         'phone': visit.phone or str((visit.patient_snapshot or {}).get('phone', '')),
         'priority_type': visit.priority_type,
         'tests': [test.test_name for test in visit.tests],
+        'test_details': [
+            {
+                'test_name': test.test_name,
+                'priority_flag': test.priority_flag,
+            }
+            for test in visit.tests
+        ],
         'status': status,
         'lab_id': f'l{next_lab}' if next_lab else None,
         'arrival_time': visit.arrival_time,

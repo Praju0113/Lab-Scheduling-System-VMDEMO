@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime, timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -38,6 +37,7 @@ def _ensure_schema() -> None:
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE visits ADD COLUMN IF NOT EXISTS phone VARCHAR(20)"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
+        connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS priority_flag VARCHAR(20) DEFAULT 'NONE' NOT NULL"))
 
 
 @app.on_event('startup')
@@ -69,11 +69,24 @@ def _next_public_id(db: Session, arrival_time: datetime) -> str:
     return build_patient_id(visit_date, sequence)
 
 
+def _requested_frontend_tests(payload: FrontendPatientPayload) -> list[dict[str, str]]:
+    if payload.test_details:
+        return [
+            {
+                'test_name': item.test_name,
+                'priority_flag': item.priority_flag or 'NONE',
+            }
+            for item in payload.test_details
+        ]
+    return [{'test_name': test_name, 'priority_flag': 'NONE'} for test_name in payload.test_names]
+
+
 def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: FrontendPatientPayload, reason: str) -> Visit:
-    if not payload.test_names:
+    requested_tests = _requested_frontend_tests(payload)
+    if not requested_tests:
         raise HTTPException(status_code=400, detail='At least one test is required')
     catalog = test_catalog_map()
-    invalid_tests = [name for name in payload.test_names if name not in catalog]
+    invalid_tests = [item['test_name'] for item in requested_tests if item['test_name'] not in catalog]
     if invalid_tests:
         raise HTTPException(status_code=400, detail=f'Unknown tests: {", ".join(invalid_tests)}')
 
@@ -94,20 +107,25 @@ def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: Frontend
         else:
             preserved_tests.append(test)
 
-    remaining_requested = Counter(payload.test_names)
+    remaining_requested: dict[str, list[str]] = {}
+    for item in requested_tests:
+        remaining_requested.setdefault(item['test_name'], []).append(item['priority_flag'] or 'NONE')
+
     for test in preserved_tests:
-        if remaining_requested[test.test_name] > 0:
-            remaining_requested[test.test_name] -= 1
+        priorities = remaining_requested.get(test.test_name, [])
+        if priorities:
+            test.priority_flag = priorities.pop(0)
 
     for test in editable_tests:
-        if remaining_requested[test.test_name] > 0:
+        priorities = remaining_requested.get(test.test_name, [])
+        if priorities:
             item = catalog[test.test_name]
             test.test_code = item['test_code']
             test.category = item['category']
             test.duration_minutes = int(item['duration_minutes'])
             test.tags = list(item.get('tags', []))
             test.condition_category = item.get('condition_category')
-            remaining_requested[test.test_name] -= 1
+            test.priority_flag = priorities.pop(0)
             continue
         queue_entries = db.scalars(select(QueueEntry).where(QueueEntry.test_item_id == test.id)).all()
         for entry in queue_entries:
@@ -116,11 +134,9 @@ def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: Frontend
 
     db.flush()
 
-    for test_name, count in remaining_requested.items():
-        if count <= 0:
-            continue
+    for test_name, priorities in remaining_requested.items():
         item = catalog[test_name]
-        for _ in range(count):
+        for priority_flag in priorities:
             db.add(TestItem(
                 visit_id=visit.id,
                 test_code=item['test_code'],
@@ -129,6 +145,7 @@ def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: Frontend
                 duration_minutes=int(item['duration_minutes']),
                 tags=list(item.get('tags', [])),
                 condition_category=item.get('condition_category'),
+                priority_flag=priority_flag or 'NONE',
             ))
 
     db.flush()
@@ -159,10 +176,11 @@ def frontend_test_catalog_route():
 
 @app.post('/api/frontend/patients')
 async def create_frontend_patient(payload: FrontendPatientPayload, db: Session = Depends(get_db)):
-    if not payload.test_names:
+    requested_tests = _requested_frontend_tests(payload)
+    if not requested_tests:
         raise HTTPException(status_code=400, detail='At least one test is required')
     catalog = test_catalog_map()
-    invalid_tests = [name for name in payload.test_names if name not in catalog]
+    invalid_tests = [item['test_name'] for item in requested_tests if item['test_name'] not in catalog]
     if invalid_tests:
         raise HTTPException(status_code=400, detail=f'Unknown tests: {", ".join(invalid_tests)}')
     now = datetime.now().astimezone()
@@ -179,8 +197,8 @@ async def create_frontend_patient(payload: FrontendPatientPayload, db: Session =
     )
     db.add(visit)
     db.flush()
-    for test_name in payload.test_names:
-        item = catalog[test_name]
+    for requested_test in requested_tests:
+        item = catalog[requested_test['test_name']]
         from app.models import TestStatus, QueueStatus
         # Tests created in WAITING state - ready for OR scheduling
         db.add(TestItem(
@@ -191,6 +209,7 @@ async def create_frontend_patient(payload: FrontendPatientPayload, db: Session =
             duration_minutes=int(item['duration_minutes']),
             tags=list(item.get('tags', [])),
             condition_category=item.get('condition_category'),
+            priority_flag=requested_test['priority_flag'] or 'NONE',
             status=TestStatus.SCHEDULED,
             queue_status=QueueStatus.WAITING,
         ))

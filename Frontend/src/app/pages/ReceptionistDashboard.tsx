@@ -130,7 +130,8 @@ export default function ReceptionistDashboard() {
       patient_gender: data.patientGender,
       priority_type: data.priorityType,
       phone: data.phone ?? '',
-      test_names: data.testNames,
+      test_names: data.selectedTests.map((test) => test.test_name),
+      test_details: data.selectedTests,
     });
     setShowPatientModal(false);
     setEditingVisit(null);

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { Lab, Specialist, Visit } from '../types';
+import { Lab, Specialist, TestPriorityFlag, Visit } from '../types';
 import { frontendApi, FrontendDeltaResponse } from '../api/frontend';
 
 interface VisitPayload {
@@ -9,6 +9,7 @@ interface VisitPayload {
   priority_type: string;
   phone: string;
   test_names: string[];
+  test_details?: Array<{ test_name: string; priority_flag: TestPriorityFlag }>;
 }
 
 interface QueueSnapshotLike {

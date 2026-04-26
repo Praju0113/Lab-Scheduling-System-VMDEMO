@@ -96,6 +96,7 @@ class TestItem(Base):
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     condition_category: Mapped[str | None] = mapped_column(String(255))
+    priority_flag: Mapped[str] = mapped_column(String(20), default='NONE', nullable=False, index=True)
     status: Mapped[TestStatus] = mapped_column(SqlEnum(TestStatus), default=TestStatus.SCHEDULED, nullable=False, index=True)
     queue_status: Mapped[QueueStatus] = mapped_column(SqlEnum(QueueStatus), default=QueueStatus.NOT_QUEUED, nullable=False, index=True)
     assigned_lab_id: Mapped[int | None] = mapped_column(ForeignKey('labs.id', ondelete='SET NULL'), index=True)

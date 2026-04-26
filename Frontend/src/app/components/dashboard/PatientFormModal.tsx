@@ -4,7 +4,13 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { X } from 'lucide-react';
 import { Modal } from './Modal';
-import { Visit, TestCatalogItem } from '../../types';
+import { TestPriorityFlag, Visit, TestCatalogItem } from '../../types';
+
+const TEST_PRIORITY_OPTIONS: Array<{ value: TestPriorityFlag; label: string }> = [
+  { value: 'NONE', label: 'No Priority' },
+  { value: 'PRIORITY', label: 'Priority' },
+  { value: 'HIGH_PRIORITY', label: 'High Priority' },
+];
 
 const patientSchema = z.object({
   patientName: z.string().min(2, 'Name is required'),
@@ -12,7 +18,10 @@ const patientSchema = z.object({
   patientGender: z.enum(['Male', 'Female', 'Other']),
   priorityType: z.enum(['NORMAL', 'EMERGENCY']),
   phone: z.string().optional(),
-  testNames: z.array(z.string()).min(1, 'Select at least one test'),
+  selectedTests: z.array(z.object({
+    test_name: z.string().min(1),
+    priority_flag: z.enum(['NONE', 'PRIORITY', 'HIGH_PRIORITY']),
+  })).min(1, 'Select at least one test'),
 });
 
 export type PatientFormData = z.infer<typeof patientSchema>;
@@ -23,7 +32,7 @@ const defaultValues: PatientFormData = {
   patientGender: 'Male',
   priorityType: 'NORMAL',
   phone: '',
-  testNames: [],
+  selectedTests: [],
 };
 
 export function PatientFormModal({
@@ -65,19 +74,22 @@ export function PatientFormModal({
         patientGender: editingPatient.patient_gender,
         priorityType: editingPatient.priority_type === 'EMERGENCY' ? 'EMERGENCY' : 'NORMAL',
         phone: editingPatient.phone ?? '',
-        testNames: editingPatient.tests,
+        selectedTests:
+          editingPatient.test_details && editingPatient.test_details.length > 0
+            ? editingPatient.test_details
+            : editingPatient.tests.map((test_name) => ({ test_name, priority_flag: 'NONE' as const })),
       });
       return;
     }
     reset(defaultValues);
   }, [editingPatient, isOpen, reset]);
 
-  const selectedTests = watch('testNames') ?? [];
+  const selectedTests = watch('selectedTests') ?? [];
 
   const filteredCatalog = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return testCatalog.filter((item) => {
-      if (selectedTests.includes(item.test_name)) return false;
+      if (selectedTests.some((selected) => selected.test_name === item.test_name)) return false;
       if (!normalizedQuery) return true;
       return item.test_name.toLowerCase().includes(normalizedQuery);
     });
@@ -86,16 +98,24 @@ export function PatientFormModal({
   if (!isOpen) return null;
 
   const addTest = (testName: string) => {
-    if (selectedTests.includes(testName)) return;
-    setValue('testNames', [...selectedTests, testName], { shouldValidate: true, shouldDirty: true });
+    if (selectedTests.some((selected) => selected.test_name === testName)) return;
+    setValue('selectedTests', [...selectedTests, { test_name: testName, priority_flag: 'NONE' }], { shouldValidate: true, shouldDirty: true });
     setQuery('');
     setIsPickerOpen(true);
     window.requestAnimationFrame(() => inputRef.current?.focus());
   };
 
   const removeTest = (testName: string) => {
-    setValue('testNames', selectedTests.filter((item) => item !== testName), { shouldValidate: true, shouldDirty: true });
+    setValue('selectedTests', selectedTests.filter((item) => item.test_name !== testName), { shouldValidate: true, shouldDirty: true });
     window.requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const updateTestPriority = (testName: string, priorityFlag: TestPriorityFlag) => {
+    setValue(
+      'selectedTests',
+      selectedTests.map((item) => (item.test_name === testName ? { ...item, priority_flag: priorityFlag } : item)),
+      { shouldValidate: true, shouldDirty: true },
+    );
   };
 
   const onSubmit = async (data: PatientFormData) => {
@@ -167,17 +187,17 @@ export function PatientFormModal({
             onClick={() => inputRef.current?.focus()}
           >
             <div className="flex flex-wrap items-center gap-2">
-              {selectedTests.map((testName) => (
-                <span key={testName} className="inline-flex items-center gap-1 rounded-full bg-[#f3ebf7] px-3 py-1 text-sm text-[#5D2582]">
-                  {testName}
+              {selectedTests.map((test) => (
+                <span key={test.test_name} className="inline-flex items-center gap-1 rounded-full bg-[#f3ebf7] px-3 py-1 text-sm text-[#5D2582]">
+                  {test.test_name}
                   <button
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      removeTest(testName);
+                      removeTest(test.test_name);
                     }}
                     className="rounded-full p-0.5 hover:bg-[#e0d0ea]"
-                    aria-label={`Remove ${testName}`}
+                    aria-label={`Remove ${test.test_name}`}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -195,7 +215,7 @@ export function PatientFormModal({
                 onBlur={() => window.setTimeout(() => setIsPickerOpen(false), 120)}
                 onKeyDown={(event) => {
                   if (event.key === 'Backspace' && !query && selectedTests.length) {
-                    removeTest(selectedTests[selectedTests.length - 1]);
+                    removeTest(selectedTests[selectedTests.length - 1].test_name);
                   }
                 }}
                 placeholder={selectedTests.length ? 'Type to add another test' : 'Search tests'}
@@ -222,8 +242,32 @@ export function PatientFormModal({
               )}
             </div>
           )}
-          {errors.testNames && <p className="text-red-500 text-xs mt-1">{errors.testNames.message}</p>}
+          {errors.selectedTests && <p className="text-red-500 text-xs mt-1">{errors.selectedTests.message}</p>}
         </div>
+
+        {selectedTests.length > 0 && (
+          <div>
+            <label className="block text-sm text-gray-600 mb-2">Test Priority Flags</label>
+            <div className="space-y-3">
+              {selectedTests.map((test) => (
+                <div key={`priority-${test.test_name}`} className="grid grid-cols-[1.4fr_1fr] gap-3 rounded-lg border border-gray-200 p-3">
+                  <div className="flex items-center text-sm text-gray-900">{test.test_name}</div>
+                  <select
+                    value={test.priority_flag}
+                    onChange={(event) => updateTestPriority(test.test_name, event.target.value as TestPriorityFlag)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                  >
+                    {TEST_PRIORITY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-3 justify-end pt-2">
           <button
@@ -245,6 +289,4 @@ export function PatientFormModal({
     </Modal>
   );
 }
-
-
 

@@ -38,6 +38,11 @@ class VisitPayload(BaseModel):
     tests: list[dict[str, Any]]
 
 
+class FrontendPatientTestPayload(BaseModel):
+    test_name: str
+    priority_flag: str = 'NONE'
+
+
 class FrontendPatientPayload(BaseModel):
     patient_name: str
     patient_age: int
@@ -45,6 +50,7 @@ class FrontendPatientPayload(BaseModel):
     priority_type: str = 'NORMAL'
     phone: str = ''
     test_names: list[str] = Field(default_factory=list)
+    test_details: list[FrontendPatientTestPayload] = Field(default_factory=list)
 
 
 class AcceptPendingPayload(BaseModel):
