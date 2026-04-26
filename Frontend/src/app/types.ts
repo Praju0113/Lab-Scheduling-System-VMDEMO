@@ -37,6 +37,23 @@ export interface TestCatalogItem {
   condition_category?: string | null;
 }
 
+export interface ServiceDependencyRule {
+  id: number;
+  test_code: string;
+  test_name?: string | null;
+  depends_on_test_code: string;
+  depends_on_test_name?: string | null;
+  dependency_type: string;
+  is_strict: boolean;
+}
+
+export interface ServiceManagementData {
+  lab_categories: string[];
+  test_categories: string[];
+  tests: TestCatalogItem[];
+  dependency_rules: ServiceDependencyRule[];
+}
+
 export interface WaitingCandidate {
   visit_id: string;
   visit_test_id: number;

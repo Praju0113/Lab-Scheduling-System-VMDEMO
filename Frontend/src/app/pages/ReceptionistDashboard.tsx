@@ -28,11 +28,11 @@ import { SpecialistFormModal } from '../components/dashboard/SpecialistFormModal
 import { LabFormModal } from '../components/dashboard/LabFormModal';
 import { LabGroupFormModal } from '../components/dashboard/LabGroupFormModal';
 import { PatientFormData, PatientFormModal } from '../components/dashboard/PatientFormModal';
-import { Gender, Lab, LabGroup, Specialist, TestCatalogItem, Visit } from '../types';
+import { Gender, Lab, LabGroup, ServiceManagementData, Specialist, TestCatalogItem, Visit } from '../types';
 import { frontendApi } from '../api/frontend';
 
 type TabType = 'dashboard' | 'patients' | 'waiting' | 'labs' | 'config';
-type ConfigTabType = 'specialist' | 'lab';
+type ConfigTabType = 'specialist' | 'lab' | 'service';
 
 const compareByDisplayName = <T extends { name: string }>(left: T, right: T) =>
   left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
@@ -67,11 +67,14 @@ export default function ReceptionistDashboard() {
   const [editingSpecialist, setEditingSpecialist] = useState<Specialist | null>(null);
   const [editingLab, setEditingLab] = useState<Lab | null>(null);
   const [editingVisit, setEditingVisit] = useState<Visit | null>(null);
+  const [serviceTestSearch, setServiceTestSearch] = useState('');
   const [testCatalog, setTestCatalog] = useState<TestCatalogItem[]>([]);
+  const [serviceManagementData, setServiceManagementData] = useState<ServiceManagementData | null>(null);
 
   useEffect(() => {
     initializeData().catch((error) => console.error('Failed to load receptionist dashboard', error));
     frontendApi.getTestCatalog().then(setTestCatalog).catch((error) => console.error('Failed to load test catalog', error));
+    frontendApi.getServiceManagement().then(setServiceManagementData).catch((error) => console.error('Failed to load service management data', error));
   }, [initializeData]);
 
   const completedCount = visits.filter((visit) => visit.status === 'Completed').length;
@@ -129,6 +132,27 @@ export default function ReceptionistDashboard() {
   );
 
   const waitingVisits = useMemo(() => visits.filter((visit) => visit.status === 'Waiting'), [visits]);
+  const serviceTests = serviceManagementData?.tests ?? [];
+  const serviceLabCategories = serviceManagementData?.lab_categories ?? [];
+  const serviceTestCategories = serviceManagementData?.test_categories ?? [];
+  const serviceDependencyRules = serviceManagementData?.dependency_rules ?? [];
+  const filteredServiceTests = useMemo(() => {
+    const query = serviceTestSearch.trim().toLowerCase();
+
+    if (!query) {
+      return serviceTests;
+    }
+
+    return serviceTests.filter((item) =>
+      [
+        item.test_name,
+        item.test_code,
+        item.category,
+        item.condition_category ?? '',
+        ...item.tags,
+      ].some((value) => value.toLowerCase().includes(query)),
+    );
+  }, [serviceTests, serviceTestSearch]);
 
   const handleSaveVisit = async (data: PatientFormData) => {
     await saveVisit(editingVisit?.id ?? null, {
@@ -506,6 +530,12 @@ export default function ReceptionistDashboard() {
                 >
                   Lab Management
                 </button>
+                <button
+                  onClick={() => setConfigTab('service')}
+                  className={`flex-1 px-6 py-3 rounded-lg transition-colors ${configTab === 'service' ? 'bg-[#5D2582] text-white' : 'text-gray-700 hover:bg-gray-100'}`}
+                >
+                  Service Management
+                </button>
               </div>
             </div>
 
@@ -619,6 +649,162 @@ export default function ReceptionistDashboard() {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            )}
+
+            {configTab === 'service' && (
+              <div className="space-y-6">
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h2 className="text-2xl text-gray-900">Service Management</h2>
+                      <p className="text-sm text-gray-500 mt-1">Read-only view of the current backend service catalog and dependency rules.</p>
+                    </div>
+                    <button
+                      onClick={() => frontendApi.getServiceManagement().then(setServiceManagementData).catch((error) => console.error('Failed to refresh service management data', error))}
+                      className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      <RefreshCw className="w-5 h-5" />
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-4">
+                    <StatCard title="Lab Categories" value={serviceLabCategories.length} icon={FlaskConical} color="text-[#5D2582]" bgColor="bg-[#f3ebf7]" />
+                    <StatCard title="Test Categories" value={serviceTestCategories.length} icon={Settings} color="text-blue-600" bgColor="bg-blue-50" />
+                    <StatCard title="Tests" value={serviceTests.length} icon={Users} color="text-green-600" bgColor="bg-green-50" />
+                    <StatCard title="Dependency Rules" value={serviceDependencyRules.length} icon={Clock} color="text-amber-600" bgColor="bg-amber-50" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-xl text-gray-900 mb-4">Lab Categories</h3>
+                    <div className="max-h-[360px] overflow-y-auto pr-2">
+                      <div className="flex flex-wrap gap-2">
+                        {serviceLabCategories.map((category) => (
+                          <span key={category} className="rounded-full bg-[#f3ebf7] px-3 py-2 text-sm text-[#5D2582]">
+                            {category}
+                          </span>
+                        ))}
+                        {!serviceLabCategories.length && <p className="text-sm text-gray-500">No lab categories found.</p>}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-xl text-gray-900 mb-4">Test Categories</h3>
+                    <div className="max-h-[360px] overflow-y-auto pr-2">
+                      <div className="flex flex-wrap gap-2">
+                        {serviceTestCategories.map((category) => (
+                          <span key={category} className="rounded-full bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                            {category}
+                          </span>
+                        ))}
+                        {!serviceTestCategories.length && <p className="text-sm text-gray-500">No test categories found.</p>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <div className="mb-4 flex items-center justify-between gap-4">
+                    <h3 className="text-xl text-gray-900">Tests</h3>
+                    <div className="relative w-full max-w-sm">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        value={serviceTestSearch}
+                        onChange={(event) => setServiceTestSearch(event.target.value)}
+                        placeholder="Search tests"
+                        className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm text-gray-900 outline-none transition-colors focus:border-[#5D2582]"
+                      />
+                    </div>
+                  </div>
+                  <div className="max-h-[700px] overflow-auto">
+                  <table className="w-full min-w-[450px] table-auto">
+                    <thead>
+                      <tr className="border-b border-gray-200">
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Name</th>
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Code</th>
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Lab Category</th>
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Category</th>
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Duration</th>
+                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Tags</th>
+                      </tr>
+                      </thead>
+                      <tbody>
+                        {filteredServiceTests.map((item, index) => (
+                          <tr key={`${item.test_code}-${item.test_name}-${index}`} className="border-b border-gray-100 hover:bg-gray-50">
+                            <td className="px-1 py-1 text-sm text-gray-900">{item.test_name}</td>
+                            <td className="px-1 py-1 text-sm text-gray-600">{item.test_code}</td>
+                            <td className="px-1 py-1 text-sm text-gray-600">{item.category}</td>
+                            <td className="px-1 py-1 text-sm text-gray-600">{item.condition_category || '-'}</td>
+                            <td className="px-1 py-1 text-sm text-gray-600">{item.duration_minutes} min</td>
+                            <td className="px-1 py-1 text-sm text-gray-600">
+                              {item.tags.length ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {item.tags.map((tag) => (
+                                    <span key={`${item.test_code}-${tag}`} className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700">
+                                      {tag}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                '-'
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {!filteredServiceTests.length && (
+                          <tr>
+                            <td colSpan={6} className="px-3 py-5 text-center text-sm text-gray-500">
+                              No tests found.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                  <h3 className="text-xl text-gray-900 mb-4">Dependency Rules</h3>
+                  <div className="max-h-[360px] overflow-auto">
+                    <table className="w-full min-w-[860px]">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Test</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Depends On</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Rule Type</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Enforcement</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {serviceDependencyRules.map((rule) => (
+                          <tr key={rule.id} className="border-b border-gray-100 hover:bg-gray-50">
+                            <td className="py-3 px-4 text-sm text-gray-900">
+                              <div>{rule.test_name || rule.test_code}</div>
+                              <div className="text-xs text-gray-500">{rule.test_code}</div>
+                            </td>
+                            <td className="py-3 px-4 text-sm text-gray-900">
+                              <div>{rule.depends_on_test_name || rule.depends_on_test_code}</div>
+                              <div className="text-xs text-gray-500">{rule.depends_on_test_code}</div>
+                            </td>
+                            <td className="py-3 px-4 text-sm text-gray-600">{rule.dependency_type}</td>
+                            <td className="py-3 px-4 text-sm text-gray-600">{rule.is_strict ? 'Strict' : 'Soft'}</td>
+                          </tr>
+                        ))}
+                        {!serviceDependencyRules.length && (
+                          <tr>
+                            <td colSpan={4} className="py-6 px-4 text-center text-sm text-gray-500">
+                              No dependency rules found.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}

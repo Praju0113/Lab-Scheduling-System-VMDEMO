@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
+import { ServiceManagementData, TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
 
 export interface FrontendBootstrapResponse {
   visits: any[];
@@ -41,6 +41,10 @@ export const frontendApi = {
   getTestCatalog: async () => {
     const response = await apiClient.get<{ items: TestCatalogItem[] }>('/frontend/test-catalog');
     return response.data.items;
+  },
+  getServiceManagement: async () => {
+    const response = await apiClient.get<ServiceManagementData>('/frontend/service-management');
+    return response.data;
   },
   createPatient: async (payload: {
     patient_name: string;

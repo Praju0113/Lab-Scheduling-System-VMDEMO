@@ -14,7 +14,7 @@ from app.realtime import emit_nowait, mount
 from app.schemas import AcceptPendingPayload, DeltaResponse, FrontendPatientPayload, LabGroupPayload, LabPayload, SpecialistPayload, VisitListResponse, VisitPayload
 from app.seed import reset_database, seed_database
 from app.catalog import test_catalog_map
-from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_specialist, frontend_test_catalog, frontend_visit, paginated_visits, waiting_candidates_payload
+from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_service_management, frontend_specialist, frontend_test_catalog, frontend_visit, paginated_visits, waiting_candidates_payload
 from app.services.patient_ids import build_patient_id, extract_sequence, patient_id_date
 from app.services.queue import QueueService
 from app.services.scheduling import SchedulingService
@@ -173,6 +173,11 @@ def admin_dashboard(db: Session = Depends(get_db)):
 @app.get('/api/frontend/test-catalog')
 def frontend_test_catalog_route():
     return {'items': frontend_test_catalog()}
+
+
+@app.get('/api/frontend/service-management')
+def frontend_service_management_route(db: Session = Depends(get_db)):
+    return frontend_service_management(db)
 
 
 @app.post('/api/frontend/patients')

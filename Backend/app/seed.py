@@ -48,6 +48,7 @@ def seed_dependencies(session: Session) -> None:
 
 def seed_database(session: Session, base_date: date | None = None) -> None:
     if session.scalar(select(func.count()).select_from(Specialist)):
+        seed_dependencies(session)
         return
     specialists = []
     for row in DEFAULT_SPECIALISTS:

@@ -6,8 +6,9 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import Lab, LabGroup, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
+from app.models import ExplicitDependencies, Lab, LabGroup, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
 from app.catalog import build_test_catalog
+from app.seed import TEST_DEPENDENCIES
 from app.services.scheduling import SchedulingService
 
 
@@ -185,6 +186,84 @@ def frontend_test_catalog() -> list[dict]:
         }
         for item in build_test_catalog()
     ]
+
+
+def frontend_service_management(session: Session) -> dict:
+    catalog = sorted(build_test_catalog(), key=lambda item: item['test_name'].lower())
+    test_lookup = {item['test_code']: item['test_name'] for item in catalog}
+    db_dependency_rules = session.scalars(
+        select(ExplicitDependencies).order_by(
+            ExplicitDependencies.test_code.asc(),
+            ExplicitDependencies.depends_on_test_code.asc(),
+        )
+    ).all()
+    dependency_rules: list[dict] = []
+    seen_rules: set[tuple[str, str, str, bool]] = set()
+
+    for rule in db_dependency_rules:
+        rule_key = (
+            rule.test_code,
+            rule.depends_on_test_code,
+            rule.dependency_type,
+            rule.is_strict,
+        )
+        seen_rules.add(rule_key)
+        dependency_rules.append(
+            {
+                'id': rule.id,
+                'test_code': rule.test_code,
+                'test_name': test_lookup.get(rule.test_code),
+                'depends_on_test_code': rule.depends_on_test_code,
+                'depends_on_test_name': test_lookup.get(rule.depends_on_test_code),
+                'dependency_type': rule.dependency_type,
+                'is_strict': rule.is_strict,
+            }
+        )
+
+    fallback_rule_id = -1
+    for rule in TEST_DEPENDENCIES:
+        rule_key = (
+            rule['test_code'],
+            rule['depends_on_test_code'],
+            rule['dependency_type'],
+            rule['is_strict'],
+        )
+        if rule_key in seen_rules:
+            continue
+        dependency_rules.append(
+            {
+                'id': fallback_rule_id,
+                'test_code': rule['test_code'],
+                'test_name': test_lookup.get(rule['test_code']),
+                'depends_on_test_code': rule['depends_on_test_code'],
+                'depends_on_test_name': test_lookup.get(rule['depends_on_test_code']),
+                'dependency_type': rule['dependency_type'],
+                'is_strict': rule['is_strict'],
+            }
+        )
+        fallback_rule_id -= 1
+
+    dependency_rules.sort(key=lambda rule: (rule['test_code'], rule['depends_on_test_code']))
+
+    return {
+        'lab_categories': sorted({item['category'] for item in catalog}),
+        'test_categories': sorted({item['condition_category'] for item in catalog if item.get('condition_category')}),
+        'tests': [
+            {
+                'test_name': item['test_name'],
+                'test_code': item['test_code'],
+                'category': item['category'],
+                'duration_minutes': item['duration_minutes'],
+                'tags': list(item.get('tags', [])),
+                'condition_category': item.get('condition_category'),
+            }
+            for item in catalog
+        ],
+        'dependency_rules': [
+            rule
+            for rule in dependency_rules
+        ],
+    }
 
 
 def waiting_candidates_payload(session: Session, lab_id: int) -> dict:
