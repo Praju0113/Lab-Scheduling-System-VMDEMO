@@ -28,8 +28,9 @@ import { SpecialistFormModal } from '../components/dashboard/SpecialistFormModal
 import { LabFormModal } from '../components/dashboard/LabFormModal';
 import { LabGroupFormModal } from '../components/dashboard/LabGroupFormModal';
 import { PatientFormData, PatientFormModal } from '../components/dashboard/PatientFormModal';
-import { Gender, Lab, LabGroup, ServiceManagementData, Specialist, TestCatalogItem, Visit } from '../types';
+import { Gender, HospitalCatalogEntry, Lab, LabGroup, ServiceDependencyRule, ServiceManagementData, Specialist, TestCatalogItem, Visit } from '../types';
 import { frontendApi } from '../api/frontend';
+import { TestCatalogImportModal } from '../components/dashboard/TestCatalogImportModal';
 
 type TabType = 'dashboard' | 'patients' | 'waiting' | 'labs' | 'config';
 type ConfigTabType = 'specialist' | 'lab' | 'service';
@@ -70,12 +71,72 @@ export default function ReceptionistDashboard() {
   const [serviceTestSearch, setServiceTestSearch] = useState('');
   const [testCatalog, setTestCatalog] = useState<TestCatalogItem[]>([]);
   const [serviceManagementData, setServiceManagementData] = useState<ServiceManagementData | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showAddDepModal, setShowAddDepModal] = useState(false);
+  const [newDepTestCode, setNewDepTestCode] = useState('');
+  const [newDepDependsOn, setNewDepDependsOn] = useState('');
+  const [editingDuration, setEditingDuration] = useState<{ code: string; value: number } | null>(null);
 
   useEffect(() => {
     initializeData().catch((error) => console.error('Failed to load receptionist dashboard', error));
     frontendApi.getTestCatalog().then(setTestCatalog).catch((error) => console.error('Failed to load test catalog', error));
     frontendApi.getServiceManagement().then(setServiceManagementData).catch((error) => console.error('Failed to load service management data', error));
   }, [initializeData]);
+
+  const refreshServiceData = () => {
+    frontendApi.getServiceManagement().then(setServiceManagementData).catch(console.error);
+    frontendApi.getTestCatalog().then(setTestCatalog).catch(console.error);
+  };
+
+  const handleToggleTestActive = async (testCode: string, isActive: boolean) => {
+    try {
+      await frontendApi.updateCatalogEntry(testCode, { is_active: !isActive });
+      refreshServiceData();
+    } catch (err) {
+      console.error('Failed to toggle test', err);
+    }
+  };
+
+  const handleSaveDuration = async (testCode: string, duration: number) => {
+    try {
+      await frontendApi.updateCatalogEntry(testCode, { duration_minutes: duration });
+      setEditingDuration(null);
+      refreshServiceData();
+    } catch (err) {
+      console.error('Failed to update duration', err);
+    }
+  };
+
+  const handleDeleteTest = async (testCode: string) => {
+    try {
+      await frontendApi.deleteCatalogEntry(testCode);
+      refreshServiceData();
+    } catch (err) {
+      console.error('Failed to delete test', err);
+    }
+  };
+
+  const handleAddDependency = async () => {
+    if (!newDepTestCode || !newDepDependsOn) return;
+    try {
+      await frontendApi.createDependency({ test_code: newDepTestCode, depends_on_test_code: newDepDependsOn });
+      setShowAddDepModal(false);
+      setNewDepTestCode('');
+      setNewDepDependsOn('');
+      refreshServiceData();
+    } catch (err) {
+      console.error('Failed to add dependency', err);
+    }
+  };
+
+  const handleDeleteDependency = async (depId: number) => {
+    try {
+      await frontendApi.deleteDependency(depId);
+      refreshServiceData();
+    } catch (err) {
+      console.error('Failed to delete dependency', err);
+    }
+  };
 
   const completedCount = visits.filter((visit) => visit.status === 'Completed').length;
   const waitingCount = visits.filter((visit) => visit.status === 'Waiting').length;
@@ -132,6 +193,7 @@ export default function ReceptionistDashboard() {
   );
 
   const waitingVisits = useMemo(() => visits.filter((visit) => visit.status === 'Waiting'), [visits]);
+  const existingTestCodes = useMemo(() => new Set((serviceManagementData?.tests ?? []).map((t) => t.test_code)), [serviceManagementData]);
   const serviceTests = serviceManagementData?.tests ?? [];
   const serviceLabCategories = serviceManagementData?.lab_categories ?? [];
   const serviceTestCategories = serviceManagementData?.test_categories ?? [];
@@ -183,16 +245,22 @@ export default function ReceptionistDashboard() {
                 <p className="text-sm text-[#c8a8d8]">Patient & Lab Management</p>
               </div>
             </div>
-            <button
-              onClick={() => {
-                logout();
-                navigate('/');
-              }}
-              className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <LogOut className="w-5 h-5 text-black" />
-              Logout
-            </button>
+            <div className="flex items-center gap-4">
+              <div className="text-right text-white">
+                <p className="text-sm font-medium">{useAuthStore.getState().dbUser?.display_name}</p>
+                <p className="text-xs text-[#c8a8d8]">{useAuthStore.getState().dbUser?.hospital_name}</p>
+              </div>
+              <button
+                onClick={() => {
+                  logout();
+                  navigate('/');
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <LogOut className="w-5 h-5 text-black" />
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -659,10 +727,10 @@ export default function ReceptionistDashboard() {
                   <div className="flex items-center justify-between mb-6">
                     <div>
                       <h2 className="text-2xl text-gray-900">Service Management</h2>
-                      <p className="text-sm text-gray-500 mt-1">Read-only view of the current backend service catalog and dependency rules.</p>
+                      <p className="text-sm text-gray-500 mt-1">Manage your hospital's test catalog and dependency rules.</p>
                     </div>
                     <button
-                      onClick={() => frontendApi.getServiceManagement().then(setServiceManagementData).catch((error) => console.error('Failed to refresh service management data', error))}
+                      onClick={refreshServiceData}
                       className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
                     >
                       <RefreshCw className="w-5 h-5" />
@@ -677,89 +745,101 @@ export default function ReceptionistDashboard() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-6">
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <h3 className="text-xl text-gray-900 mb-4">Lab Categories</h3>
-                    <div className="max-h-[360px] overflow-y-auto pr-2">
-                      <div className="flex flex-wrap gap-2">
-                        {serviceLabCategories.map((category) => (
-                          <span key={category} className="rounded-full bg-[#f3ebf7] px-3 py-2 text-sm text-[#5D2582]">
-                            {category}
-                          </span>
-                        ))}
-                        {!serviceLabCategories.length && <p className="text-sm text-gray-500">No lab categories found.</p>}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <h3 className="text-xl text-gray-900 mb-4">Test Categories</h3>
-                    <div className="max-h-[360px] overflow-y-auto pr-2">
-                      <div className="flex flex-wrap gap-2">
-                        {serviceTestCategories.map((category) => (
-                          <span key={category} className="rounded-full bg-blue-50 px-3 py-2 text-sm text-blue-700">
-                            {category}
-                          </span>
-                        ))}
-                        {!serviceTestCategories.length && <p className="text-sm text-gray-500">No test categories found.</p>}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                   <div className="mb-4 flex items-center justify-between gap-4">
-                    <h3 className="text-xl text-gray-900">Tests</h3>
-                    <div className="relative w-full max-w-sm">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-                      <input
-                        type="text"
-                        value={serviceTestSearch}
-                        onChange={(event) => setServiceTestSearch(event.target.value)}
-                        placeholder="Search tests"
-                        className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm text-gray-900 outline-none transition-colors focus:border-[#5D2582]"
-                      />
+                    <h3 className="text-xl text-gray-900">Hospital Test Catalog</h3>
+                    <div className="flex items-center gap-3">
+                      <div className="relative w-full max-w-sm">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                        <input
+                          type="text"
+                          value={serviceTestSearch}
+                          onChange={(event) => setServiceTestSearch(event.target.value)}
+                          placeholder="Search tests"
+                          className="w-full rounded-lg border border-gray-300 py-2 pl-9 pr-3 text-sm text-gray-900 outline-none transition-colors focus:border-[#5D2582]"
+                        />
+                      </div>
+                      <button
+                        onClick={() => setShowImportModal(true)}
+                        className="flex items-center gap-2 whitespace-nowrap rounded-lg bg-[#5D2582] px-4 py-2 text-sm text-white hover:bg-[#4a1e68]"
+                      >
+                        <Plus className="w-4 h-4" />
+                        Import Tests
+                      </button>
                     </div>
                   </div>
                   <div className="max-h-[700px] overflow-auto">
-                  <table className="w-full min-w-[450px] table-auto">
-                    <thead>
-                      <tr className="border-b border-gray-200">
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Name</th>
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Code</th>
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Lab Category</th>
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Test Category</th>
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Duration</th>
-                      <th className="px-1.5 py-1 text-left text-sm text-gray-600">Tags</th>
-                      </tr>
+                    <table className="w-full min-w-[550px] table-auto">
+                      <thead>
+                        <tr className="border-b border-gray-200">
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Test Name</th>
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Code</th>
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Category</th>
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Duration</th>
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Active</th>
+                          <th className="px-2 py-2 text-left text-sm text-gray-600">Actions</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {filteredServiceTests.map((item, index) => (
-                          <tr key={`${item.test_code}-${item.test_name}-${index}`} className="border-b border-gray-100 hover:bg-gray-50">
-                            <td className="px-1 py-1 text-sm text-gray-900">{item.test_name}</td>
-                            <td className="px-1 py-1 text-sm text-gray-600">{item.test_code}</td>
-                            <td className="px-1 py-1 text-sm text-gray-600">{item.category}</td>
-                            <td className="px-1 py-1 text-sm text-gray-600">{item.condition_category || '-'}</td>
-                            <td className="px-1 py-1 text-sm text-gray-600">{item.duration_minutes} min</td>
-                            <td className="px-1 py-1 text-sm text-gray-600">
-                              {item.tags.length ? (
-                                <div className="flex flex-wrap gap-1">
-                                  {item.tags.map((tag) => (
-                                    <span key={`${item.test_code}-${tag}`} className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700">
-                                      {tag}
-                                    </span>
-                                  ))}
+                          <tr key={`${item.test_code}-${index}`} className="border-b border-gray-100 hover:bg-gray-50">
+                            <td className="px-2 py-2 text-sm text-gray-900">{item.test_name}</td>
+                            <td className="px-2 py-2 text-sm text-gray-600">{item.test_code}</td>
+                            <td className="px-2 py-2 text-sm text-gray-600">{item.category}</td>
+                            <td className="px-2 py-2 text-sm text-gray-600">
+                              {editingDuration?.code === item.test_code ? (
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={editingDuration.value}
+                                    onChange={(e) => setEditingDuration({ code: item.test_code, value: Number(e.target.value) })}
+                                    className="w-16 rounded border border-gray-300 px-1 py-0.5 text-sm"
+                                  />
+                                  <button
+                                    onClick={() => handleSaveDuration(item.test_code, editingDuration.value)}
+                                    className="rounded bg-green-100 px-2 py-0.5 text-xs text-green-700 hover:bg-green-200"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingDuration(null)}
+                                    className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 hover:bg-gray-200"
+                                  >
+                                    Cancel
+                                  </button>
                                 </div>
                               ) : (
-                                '-'
+                                <button
+                                  onClick={() => setEditingDuration({ code: item.test_code, value: item.duration_minutes })}
+                                  className="text-sm text-gray-600 hover:text-[#5D2582] hover:underline"
+                                >
+                                  {item.duration_minutes} min
+                                </button>
                               )}
+                            </td>
+                            <td className="px-2 py-2">
+                              <button
+                                onClick={() => handleToggleTestActive(item.test_code, true)}
+                                className="rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-700"
+                              >
+                                Active
+                              </button>
+                            </td>
+                            <td className="px-2 py-2">
+                              <button
+                                onClick={() => handleDeleteTest(item.test_code)}
+                                className="p-1 hover:bg-red-50 rounded transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4 text-red-500" />
+                              </button>
                             </td>
                           </tr>
                         ))}
                         {!filteredServiceTests.length && (
                           <tr>
-                            <td colSpan={6} className="px-3 py-5 text-center text-sm text-gray-500">
-                              No tests found.
+                            <td colSpan={6} className="px-3 py-8 text-center text-sm text-gray-500">
+                              No tests in hospital catalog. Click "Import Tests" to add from global catalog.
                             </td>
                           </tr>
                         )}
@@ -769,15 +849,25 @@ export default function ReceptionistDashboard() {
                 </div>
 
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                  <h3 className="text-xl text-gray-900 mb-4">Dependency Rules</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xl text-gray-900">Dependency Rules</h3>
+                    <button
+                      onClick={() => setShowAddDepModal(true)}
+                      className="flex items-center gap-2 rounded-lg bg-[#5D2582] px-4 py-2 text-sm text-white hover:bg-[#4a1e68]"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add Rule
+                    </button>
+                  </div>
                   <div className="max-h-[360px] overflow-auto">
                     <table className="w-full min-w-[860px]">
                       <thead>
                         <tr className="border-b border-gray-200">
                           <th className="text-left py-3 px-4 text-sm text-gray-600">Test</th>
                           <th className="text-left py-3 px-4 text-sm text-gray-600">Depends On</th>
-                          <th className="text-left py-3 px-4 text-sm text-gray-600">Rule Type</th>
-                          <th className="text-left py-3 px-4 text-sm text-gray-600">Enforcement</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Type</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Scope</th>
+                          <th className="text-left py-3 px-4 text-sm text-gray-600">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -791,13 +881,29 @@ export default function ReceptionistDashboard() {
                               <div>{rule.depends_on_test_name || rule.depends_on_test_code}</div>
                               <div className="text-xs text-gray-500">{rule.depends_on_test_code}</div>
                             </td>
-                            <td className="py-3 px-4 text-sm text-gray-600">{rule.dependency_type}</td>
                             <td className="py-3 px-4 text-sm text-gray-600">{rule.is_strict ? 'Strict' : 'Soft'}</td>
+                            <td className="py-3 px-4">
+                              <span className={`rounded-full px-2 py-0.5 text-xs ${rule.is_global ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                                {rule.is_global ? 'Global' : 'Hospital'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              {!rule.is_global && rule.id > 0 ? (
+                                <button
+                                  onClick={() => handleDeleteDependency(rule.id)}
+                                  className="p-1 hover:bg-red-50 rounded transition-colors"
+                                >
+                                  <Trash2 className="w-4 h-4 text-red-500" />
+                                </button>
+                              ) : (
+                                <span className="text-xs text-gray-400">Global</span>
+                              )}
+                            </td>
                           </tr>
                         ))}
                         {!serviceDependencyRules.length && (
                           <tr>
-                            <td colSpan={4} className="py-6 px-4 text-center text-sm text-gray-500">
+                            <td colSpan={5} className="py-6 px-4 text-center text-sm text-gray-500">
                               No dependency rules found.
                             </td>
                           </tr>
@@ -897,6 +1003,58 @@ export default function ReceptionistDashboard() {
           });
         }}
       />
+
+      <TestCatalogImportModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        existingTestCodes={existingTestCodes}
+        onImported={refreshServiceData}
+      />
+
+      {showAddDepModal && (
+        <Modal onClose={() => setShowAddDepModal(false)} title="Add Dependency Rule">
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Test (must wait)</label>
+              <select
+                value={newDepTestCode}
+                onChange={(e) => setNewDepTestCode(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#5D2582] outline-none"
+              >
+                <option value="">Select test...</option>
+                {serviceTests.map((t) => (
+                  <option key={t.test_code} value={t.test_code}>{t.test_name} ({t.test_code})</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Depends on (must complete first)</label>
+              <select
+                value={newDepDependsOn}
+                onChange={(e) => setNewDepDependsOn(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-[#5D2582] outline-none"
+              >
+                <option value="">Select test...</option>
+                {serviceTests.filter((t) => t.test_code !== newDepTestCode).map((t) => (
+                  <option key={t.test_code} value={t.test_code}>{t.test_name} ({t.test_code})</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex justify-end gap-3 pt-2">
+              <button onClick={() => setShowAddDepModal(false)} className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50">
+                Cancel
+              </button>
+              <button
+                onClick={handleAddDependency}
+                disabled={!newDepTestCode || !newDepDependsOn}
+                className="rounded-lg bg-[#5D2582] px-4 py-2 text-sm text-white hover:bg-[#4a1e68] disabled:opacity-50"
+              >
+                Add Rule
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

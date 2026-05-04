@@ -1,9 +1,10 @@
 .vscode/
 
 # Root secrets and local env
-.env
 .env.local
 .env.*.local
+.local/
+.env
 
 # Generated debug and analysis files (created during development)
 *_ANALYSIS.md
@@ -48,3 +49,4 @@ Frontend/pnpm-debug.log*
 # OS files
 .DS_Store
 Thumbs.db
+firebase-service-account.json

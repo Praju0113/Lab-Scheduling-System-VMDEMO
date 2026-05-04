@@ -159,16 +159,22 @@ export default function AdminDashboard() {
                 <p className="text-sm text-[#c8a8d8]">Analytics & Performance Insights</p>
               </div>
             </div>
-            <button
-              onClick={() => {
-                logout();
-                navigate('/');
-              }}
-              className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <LogOut className="w-5 h-5 text-black" />
-              Logout
-            </button>
+            <div className="flex items-center gap-4">
+              <div className="text-right text-white">
+                <p className="text-sm font-medium">{useAuthStore.getState().dbUser?.display_name}</p>
+                <p className="text-xs text-[#c8a8d8]">{useAuthStore.getState().dbUser?.hospital_name}</p>
+              </div>
+              <button
+                onClick={() => {
+                  logout();
+                  navigate('/');
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-white text-black hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <LogOut className="w-5 h-5 text-black" />
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </header>

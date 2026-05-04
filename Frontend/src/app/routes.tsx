@@ -1,8 +1,9 @@
 import { createBrowserRouter } from "react-router";
-import RoleSelection from "./pages/RoleSelection";
+import LoginPage from "./pages/RoleSelection";
 import ReceptionistDashboard from "./pages/ReceptionistDashboard";
 import LabSpecialistDashboard from "./pages/LabSpecialistDashboard";
 import AdminDashboard from "./pages/AdminDashboard";
+import SuperAdminDashboard from "./pages/SuperAdminDashboard";
 import QueueDisplay from "./pages/QueueDisplay";
 import LabSpecificQueueDisplay from "./pages/LabSpecificQueueDisplay";
 import GroupQueueDisplay from "./pages/GroupQueueDisplay";
@@ -12,7 +13,7 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 export const router = createBrowserRouter([
   {
     path: "/",
-    Component: RoleSelection,
+    Component: LoginPage,
   },
   {
     path: "/receptionist",
@@ -41,6 +42,16 @@ export const router = createBrowserRouter([
       {
         path: "",
         Component: AdminDashboard,
+      }
+    ]
+  },
+  {
+    path: "/super-admin",
+    Component: () => <ProtectedRoute allowedRoles={['SuperAdmin']} />,
+    children: [
+      {
+        path: "",
+        Component: SuperAdminDashboard,
       }
     ]
   },

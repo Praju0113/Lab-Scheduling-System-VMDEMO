@@ -63,7 +63,12 @@ apiClient.interceptors.response.use(
     }
 
     if (error.response?.status === 401) {
-      useAuthStore.getState().logout();
+      // Only logout if the user was actually logged in.
+      // Pre-login 401s (bootstrap/delta before auth) should not trigger signOut.
+      const { token, logout } = useAuthStore.getState();
+      if (token) {
+        logout();
+      }
     }
     return Promise.reject(error);
   }

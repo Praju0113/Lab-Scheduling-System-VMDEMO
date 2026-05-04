@@ -19,24 +19,23 @@ Required:
 
 Optional:
 - `POSTGRES_PORT=5432`
-- `BACKEND_PORT=8000`
-- `FRONTEND_PORT=5173`
+- `BACKEND_PORT=8001`
+- `FRONTEND_PORT=5174`
 - `SEED_ON_STARTUP=true`
-- `RESET_DB_ON_STARTUP=true`
-- `VITE_API_BASE_URL=http://localhost:8000`
+- `RESET_DB_ON_STARTUP=false`
+- `VITE_API_BASE_URL=http://localhost:8001`
 
 ## Install
-```cmd
-cd /d "D:\LSS-DEMO\Backend"
-C:\Users\praju\miniconda3\Scripts\activate.bat
-conda activate labqs
+```powershell
+cd Backend
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
 ## Run
-```cmd
-cd /d "D:\LSS-DEMO\Backend"
-C:\Users\praju\miniconda3\Scripts\activate.bat
-conda activate labqs
-python -m uvicorn app.main:application --host 0.0.0.0 --port 8000 --reload
+```powershell
+cd Backend
+.\venv\Scripts\Activate.ps1
+python -m uvicorn app.main:application --host 0.0.0.0 --port 8001 --reload
 ```

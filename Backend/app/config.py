@@ -35,6 +35,8 @@ class Settings:
     cors_origins: tuple[str, ...] = _parse_cors_origins()
     seed_on_startup: bool = os.getenv('SEED_ON_STARTUP', 'true').lower() == 'true'
     reset_db_on_startup: bool = os.getenv('RESET_DB_ON_STARTUP', 'false').lower() == 'true'
+    firebase_project_id: str = os.getenv('FIREBASE_PROJECT_ID', 'labschedulling')
+    jwt_secret: str = os.getenv('JWT_SECRET', 'lab-scheduling-dev-secret-change-in-prod')
 
     @property
     def allow_all_cors_origins(self) -> bool:

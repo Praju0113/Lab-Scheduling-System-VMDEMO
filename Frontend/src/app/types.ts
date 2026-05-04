@@ -45,6 +45,25 @@ export interface ServiceDependencyRule {
   depends_on_test_name?: string | null;
   dependency_type: string;
   is_strict: boolean;
+  is_global?: boolean;
+}
+
+export interface HospitalCatalogEntry {
+  id: number;
+  test_code: string;
+  test_name: string;
+  category: string;
+  duration_minutes: number;
+  tags: string[];
+  condition_category?: string | null;
+  is_active: boolean;
+}
+
+export interface LimsConfigData {
+  hospital_id: number;
+  callback_url: string | null;
+  is_enabled: boolean;
+  has_api_key: boolean;
 }
 
 export interface ServiceManagementData {

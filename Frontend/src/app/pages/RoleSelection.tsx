@@ -1,53 +1,42 @@
-import { useNavigate } from 'react-router';
-import { UserCircle, FlaskConical, ShieldCheck } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router';
+import { LogIn, Eye, EyeOff } from 'lucide-react';
 import logo from '../../assets/Nueberg_Logo.png';
 import { useAuthStore } from '../store/useAuthStore';
 
-export default function RoleSelection() {
+export default function LoginPage() {
   const navigate = useNavigate();
-  const setAuth = useAuthStore(state => state.setAuth);
+  const { login, loading, error, role } = useAuthStore();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 1000);
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  const roles = [
-    {
-      title: 'Receptionist',
-      headerTitle: 'Reception',
-      description: 'Manage patients, labs, and system configuration',
-      icon: UserCircle,
-      path: '/receptionist',
-      role: 'Receptionist' as const,
-    },
-    {
-      title: 'Lab Specialist',
-      headerTitle: 'Lab Desk',
-      description: 'Process tests and manage lab queue',
-      icon: FlaskConical,
-      path: '/lab-specialist',
-      role: 'LabSpecialist' as const,
-    },
-    {
-      title: 'Admin',
-      headerTitle: 'Analytics',
-      description: 'View analytics and system insights',
-      icon: ShieldCheck,
-      path: '/admin',
-      role: 'Admin' as const,
-    },
-  ];
+  useEffect(() => {
+    if (role) {
+      const routes: Record<string, string> = {
+        SuperAdmin: '/super-admin',
+        Admin: '/admin',
+        Receptionist: '/receptionist',
+        LabSpecialist: '/lab-specialist',
+      };
+      navigate(routes[role] || '/');
+    }
+  }, [role, navigate]);
 
-  const handleRoleSelection = (role: string, path: string) => {
-    setAuth('mock-jwt-token-for-' + role, role as any);
-    navigate(path);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await login(email, password);
+    } catch {
+      // error is already set in the store
+    }
   };
-
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#f3ebf7] via-white to-red-50">
@@ -62,44 +51,108 @@ export default function RoleSelection() {
               <h1 className="text-3xl text-white">Lab Scheduling System</h1>
             </div>
             <div className="text-right text-white">
-              <p className="text-2xl">{currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</p>
-              <p className="text-sm text-[#c8a8d8]">{currentTime.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+              <p className="text-2xl">
+                {currentTime.toLocaleTimeString('en-US', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  second: '2-digit',
+                })}
+              </p>
+              <p className="text-sm text-[#c8a8d8]">
+                {currentTime.toLocaleDateString('en-US', {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                })}
+              </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Content */}
+      {/* Login Form */}
       <div className="flex items-center justify-center p-12">
-        <div className="w-[1200px]">
-          <div className="text-center mb-12">
-            <h2 className="text-4xl mb-3 text-gray-900">Select Login Type</h2>
-            <p className="text-gray-600">Select your role to continue</p>
-          </div>
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-xl overflow-hidden">
+            <div className="bg-gradient-to-r from-[#5D2582] via-[#7D3BA2] to-[#D4AF37] p-6">
+              <h2 className="text-2xl text-white text-center">Sign In</h2>
+              <p className="text-[#c8a8d8] text-center mt-1">
+                Enter your credentials to continue
+              </p>
+            </div>
 
-          <div className="grid grid-cols-3 gap-6">
-            {roles.map((role) => {
-              const Icon = role.icon;
-              return (
-                <button
-                  key={role.path}
-                  onClick={() => handleRoleSelection(role.role, role.path)}
-                  className="bg-white rounded-2xl overflow-hidden transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl h-[240px] flex flex-col"
+            <form onSubmit={handleSubmit} className="p-8 space-y-6">
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
+                  {error}
+                </div>
+              )}
+
+              <div>
+                <label
+                  htmlFor="email"
+                  className="block text-sm font-medium text-gray-700 mb-2"
                 >
-                  {/* Gradient Header */}
-                  <div className="bg-gradient-to-r from-[#5D2582] via-[#5D2582] via-[#5D2582] via-[#7D3BA2] to-[#D4AF37] p-4 flex items-center justify-between">
-                    <h2 className="text-xl text-white">{role.headerTitle}</h2>
-                    <Icon className="w-8 h-8 text-white" />
-                  </div>
-                  
-                  {/* Content */}
-                  <div className="p-8 flex-1 flex flex-col justify-center">
-                    <h3 className="text-2xl mb-3 text-gray-900">{role.title}</h3>
-                    <p className="text-gray-600">{role.description}</p>
-                  </div>
-                </button>
-              );
-            })}
+                  Email Address
+                </label>
+                <input
+                  id="email"
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] focus:border-transparent outline-none transition-all"
+                  placeholder="you@hospital.com"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="password"
+                  className="block text-sm font-medium text-gray-700 mb-2"
+                >
+                  Password
+                </label>
+                <div className="relative">
+                  <input
+                    id="password"
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] focus:border-transparent outline-none transition-all pr-12"
+                    placeholder="Enter your password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-5 h-5" />
+                    ) : (
+                      <Eye className="w-5 h-5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-[#5D2582] hover:bg-[#4a1d68] text-white py-3 px-4 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <LogIn className="w-5 h-5" />
+                    Sign In
+                  </>
+                )}
+              </button>
+            </form>
           </div>
         </div>
       </div>

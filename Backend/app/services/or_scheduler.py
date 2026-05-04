@@ -56,30 +56,32 @@ class ORScheduler:
     Replaces rule-based heuristics with mathematical optimization.
     """
 
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, hospital_id: int | None = None) -> None:
         self.db = db
+        self.hospital_id = hospital_id
         self.constraints = TestConstraints()
 
     def get_active_labs(self) -> list[Lab]:
         """Get all active labs with their specialists."""
         from app.models import Lab
-        return self.db.scalars(
-            select(Lab).where(Lab.is_active == True)
-        ).all()
+        stmt = select(Lab).where(Lab.is_active == True)
+        if self.hospital_id is not None:
+            stmt = stmt.where(Lab.hospital_id == self.hospital_id)
+        return self.db.scalars(stmt).all()
 
     def get_pending_tests(self) -> list[TestItem]:
         """Get tests eligible for new assignment, excluding blocked and already-assigned tests."""
         from app.models import TestItem, TestStatus, QueueStatus
 
-        candidates = self.db.scalars(
-            select(TestItem)
-            .where(
-                TestItem.status == TestStatus.SCHEDULED,
-                TestItem.queue_status == QueueStatus.WAITING,
-                TestItem.is_blocked == False,
-                TestItem.assigned_lab_id.is_(None),
-            )
-        ).all()
+        stmt = select(TestItem).where(
+            TestItem.status == TestStatus.SCHEDULED,
+            TestItem.queue_status == QueueStatus.WAITING,
+            TestItem.is_blocked == False,
+            TestItem.assigned_lab_id.is_(None),
+        )
+        if self.hospital_id is not None:
+            stmt = stmt.where(TestItem.hospital_id == self.hospital_id)
+        candidates = self.db.scalars(stmt).all()
 
         eligible: list[TestItem] = []
         for test in candidates:
@@ -366,10 +368,10 @@ class ORScheduler:
         
         # Check the QueueEntry table to see if a lab already has someone assigned as NEXT
         from app.models import QueueEntry, QueueEntryType
-        active_next_entries = self.db.scalars(
-            select(QueueEntry.lab_id)
-            .where(QueueEntry.queue_type == QueueEntryType.NEXT)
-        ).all()
+        next_stmt = select(QueueEntry.lab_id).where(QueueEntry.queue_type == QueueEntryType.NEXT)
+        if self.hospital_id is not None:
+            next_stmt = next_stmt.where(QueueEntry.hospital_id == self.hospital_id)
+        active_next_entries = self.db.scalars(next_stmt).all()
         
         for lab_id in active_next_entries:
             occupied_lab_ids.add(lab_id)
@@ -433,12 +435,14 @@ class ORScheduler:
         Other tests remain assigned but unqueued until their predecessor completes.
         """
         from app.models import TestItem, QueueEntry, QueueEntryType, QueueStatus
-        
+
+        now = datetime.now(timezone.utc)
         # First pass: assign labs to all tests
         for test_id, lab_id in assignments.items():
             test_item = self.db.get(TestItem, test_id)
             if test_item:
                 test_item.assigned_lab_id = lab_id
+                test_item.allocated_at = now
         
         # Second pass: create NEXT queue entries (only one per patient)
         # Track which patients already have a NEXT entry
@@ -470,7 +474,8 @@ class ORScheduler:
                             visit_id=test_item.visit_id,
                             test_item_id=test_item.id,
                             queue_type=QueueEntryType.NEXT,
-                            position=None
+                            position=None,
+                            hospital_id=self.hospital_id,
                         )
                         self.db.add(queue_entry)
                         patients_with_next.add(test_item.visit_id)

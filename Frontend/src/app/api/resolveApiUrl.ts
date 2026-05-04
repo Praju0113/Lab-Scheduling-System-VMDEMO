@@ -35,9 +35,11 @@ export function resolveApiBaseUrlCandidates() {
   const inferredOrigin = typeof window !== 'undefined' && window.location?.origin ? [window.location.origin] : [];
   const fallbackOrigins = [
     ...inferredOrigin,
+    'http://localhost:5174',
     'http://localhost:5173',
     'http://localhost:3001',
     'http://localhost:7071',
+    'http://127.0.0.1:5174',
     'http://127.0.0.1:5173',
     'http://127.0.0.1:3001',
     'http://127.0.0.1:7071',

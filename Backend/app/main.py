@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,12 +9,14 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
-from app.models import Lab, LabGroup, QueueEntry, QueueStatus, Specialist, TestItem, TestStatus, Visit
+from app.models import ExplicitDependencies, Hospital, HospitalTestCatalog, Lab, LabGroup, LimsConfig, LimsWebhookLog, QueueEntry, QueueStatus, Specialist, TestItem, TestStatus, User, UserRole, Visit
 from app.realtime import emit_nowait, mount
-from app.schemas import AcceptPendingPayload, DeltaResponse, FrontendPatientPayload, LabGroupPayload, LabPayload, SpecialistPayload, VisitListResponse, VisitPayload
+from app.schemas import AcceptPendingPayload, CreateHospitalPayload, CreateUserPayload, DeltaResponse, ExplicitDependencyPayload, FrontendPatientPayload, HospitalTestCatalogBulkImport, HospitalTestCatalogUpdate, LabGroupPayload, LabPayload, LimsConfigPayload, LoginPayload, SpecialistPayload, VisitListResponse, VisitPayload
 from app.seed import reset_database, seed_database
 from app.catalog import test_catalog_map
-from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_service_management, frontend_specialist, frontend_test_catalog, frontend_visit, paginated_visits, waiting_candidates_payload
+from app.auth import _init_firebase, create_firebase_user, generate_api_key, get_current_user, get_lims_hospital, require_role, verify_firebase_token
+from firebase_admin import auth as firebase_auth
+from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_service_management, frontend_specialist, frontend_test_catalog, frontend_visit, hospital_catalog_map, paginated_visits, waiting_candidates_payload
 from app.services.patient_ids import build_patient_id, extract_sequence, patient_id_date
 from app.services.queue import QueueService
 from app.services.scheduling import SchedulingService
@@ -22,14 +24,6 @@ from app.services.or_scheduler import ORScheduler
 from app.services.planning_poker import PlanningPokerService, VotingStatus
 
 app = FastAPI(title='Scalable Lab Scheduling Backend')
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=['*'] if settings.allow_all_cors_origins else list(settings.cors_origins),
-    allow_origin_regex=settings.cors_origin_regex,
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*'],
-)
 
 
 def _ensure_schema() -> None:
@@ -39,6 +33,52 @@ def _ensure_schema() -> None:
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE NOT NULL"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS priority_flag VARCHAR(20) DEFAULT 'NONE' NOT NULL"))
         connection.execute(text("ALTER TABLE labs ADD COLUMN IF NOT EXISTS group_id INTEGER"))
+        for tbl in ['specialists', 'lab_groups', 'labs', 'visits', 'test_items',
+                     'queue_entries', 'queue_cursors', 'assignment_history', 'completed_test_snapshots']:
+            connection.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS hospital_id INTEGER REFERENCES hospitals(id) ON DELETE CASCADE"))
+        connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS allocated_at TIMESTAMP WITH TIME ZONE"))
+        connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE"))
+        connection.execute(text("ALTER TABLE explicit_dependencies ADD COLUMN IF NOT EXISTS hospital_id INTEGER REFERENCES hospitals(id) ON DELETE CASCADE"))
+
+
+def _seed_default_hospital_and_users() -> None:
+    with SessionLocal() as db:
+        hospital = db.scalar(select(Hospital).where(Hospital.code == 'DEMO'))
+        if not hospital:
+            hospital = Hospital(name='Demo Hospital', code='DEMO', is_active=True)
+            db.add(hospital)
+            db.flush()
+            # Backfill existing rows
+            for tbl in ['specialists', 'lab_groups', 'labs', 'visits', 'test_items',
+                         'queue_entries', 'queue_cursors', 'assignment_history', 'completed_test_snapshots']:
+                db.execute(text(f"UPDATE {tbl} SET hospital_id = :hid WHERE hospital_id IS NULL"), {'hid': hospital.id})
+            db.commit()
+        # Seed default Super Admin user if none exists
+        if not db.scalar(select(User).where(User.role == UserRole.SUPER_ADMIN)):
+            try:
+                firebase_uid = create_firebase_user(
+                    email='admin@demo.com',
+                    password='Admin@123',
+                    display_name='Super Admin',
+                )
+            except Exception:
+                # Firebase user may already exist; look up by email
+                _init_firebase()
+                try:
+                    fb_user = firebase_auth.get_user_by_email('admin@demo.com')
+                    firebase_uid = fb_user.uid
+                except Exception:
+                    firebase_uid = None
+            if firebase_uid:
+                db.add(User(
+                    firebase_uid=firebase_uid,
+                    email='admin@demo.com',
+                    display_name='Super Admin',
+                    role=UserRole.SUPER_ADMIN,
+                    hospital_id=hospital.id,
+                    is_active=True,
+                ))
+                db.commit()
 
 
 @app.on_event('startup')
@@ -47,12 +87,10 @@ def startup() -> None:
     with SessionLocal() as session:
         if settings.reset_db_on_startup:
             reset_database(session)
-        # Seeding disabled - use manual seed endpoints only
-        # if settings.seed_on_startup:
-        #     seed_database(session)
-        #     or_scheduler = ORScheduler(session)
-        #     or_scheduler.run_optimization()
-        #     session.commit()
+    _seed_default_hospital_and_users()
+    with SessionLocal() as session:
+        if settings.seed_on_startup:
+            seed_database(session)
 
 
 def _next_public_id(db: Session, arrival_time: datetime) -> str:
@@ -82,11 +120,11 @@ def _requested_frontend_tests(payload: FrontendPatientPayload) -> list[dict[str,
     return [{'test_name': test_name, 'priority_flag': 'NONE'} for test_name in payload.test_names]
 
 
-def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: FrontendPatientPayload, reason: str) -> Visit:
+def _apply_frontend_patient_payload(db: Session, visit: Visit, payload: FrontendPatientPayload, reason: str, hospital_id: int | None = None) -> Visit:
     requested_tests = _requested_frontend_tests(payload)
     if not requested_tests:
         raise HTTPException(status_code=400, detail='At least one test is required')
-    catalog = test_catalog_map()
+    catalog = hospital_catalog_map(db, hospital_id)
     invalid_tests = [item['test_name'] for item in requested_tests if item['test_name'] not in catalog]
     if invalid_tests:
         raise HTTPException(status_code=400, detail=f'Unknown tests: {", ".join(invalid_tests)}')
@@ -160,32 +198,422 @@ def health():
     return {'status': 'ok'}
 
 
+# ===== Bootstrap: create initial Firebase users (one-time, no auth required) =====
+
+@app.post('/api/auth/bootstrap-users')
+def bootstrap_users(db: Session = Depends(get_db)):
+    if db.scalar(select(User).where(User.role == UserRole.SUPER_ADMIN)):
+        raise HTTPException(status_code=400, detail='Users already bootstrapped')
+
+    hospital = db.scalar(select(Hospital).where(Hospital.code == 'DEMO'))
+    if not hospital:
+        hospital = Hospital(name='Demo Hospital', code='DEMO', is_active=True)
+        db.add(hospital)
+        db.flush()
+
+    seed_users = [
+        ('superadmin@labscheduling.com', 'Super@123', 'Super Admin', UserRole.SUPER_ADMIN, None),
+        ('admin@demo.com', 'Admin@123', 'Demo Admin', UserRole.ADMIN, hospital.id),
+        ('receptionist@demo.com', 'Recep@123', 'Demo Receptionist', UserRole.RECEPTIONIST, hospital.id),
+        ('labspecialist@demo.com', 'Lab@1234', 'Demo Lab Specialist', UserRole.LAB_SPECIALIST, hospital.id),
+    ]
+
+    created = []
+    for email, password, display_name, role, h_id in seed_users:
+        try:
+            fb_uid = create_firebase_user(email, password, display_name)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f'Firebase error for {email}: {exc}')
+        user = User(
+            firebase_uid=fb_uid,
+            email=email,
+            display_name=display_name,
+            role=role,
+            hospital_id=h_id,
+            is_active=True,
+        )
+        db.add(user)
+        created.append({'email': email, 'password': password, 'role': role.value})
+
+    db.commit()
+    return {'created': created}
+
+
+# ===== Auth Endpoints =====
+
+@app.post('/api/auth/login')
+def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
+    import logging
+    logger = logging.getLogger('auth_debug')
+    try:
+        decoded = verify_firebase_token(payload.firebase_token)
+    except HTTPException as e:
+        logger.error('verify_firebase_token failed: %s', e.detail)
+        raise
+    uid = decoded.get('uid')
+    logger.info('Decoded token uid=%s', uid)
+    if not uid:
+        raise HTTPException(status_code=401, detail='Invalid token')
+    user = db.scalar(select(User).where(User.firebase_uid == uid, User.is_active == True))
+    if not user:
+        raise HTTPException(status_code=403, detail='User not registered in system')
+    hospital = db.get(Hospital, user.hospital_id) if user.hospital_id else None
+    return {
+        'user': {
+            'id': user.id,
+            'email': user.email,
+            'display_name': user.display_name,
+            'role': user.role.value,
+            'hospital_id': user.hospital_id,
+            'hospital_name': hospital.name if hospital else None,
+            'hospital_code': hospital.code if hospital else None,
+        }
+    }
+
+
+@app.get('/api/auth/me')
+def auth_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    hospital = db.get(Hospital, user.hospital_id) if user.hospital_id else None
+    return {
+        'id': user.id,
+        'email': user.email,
+        'display_name': user.display_name,
+        'role': user.role.value,
+        'hospital_id': user.hospital_id,
+        'hospital_name': hospital.name if hospital else None,
+        'hospital_code': hospital.code if hospital else None,
+    }
+
+
+# ===== Super Admin Endpoints =====
+
+@app.get('/api/super-admin/hospitals')
+def list_hospitals(user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    hospitals = db.scalars(select(Hospital).order_by(Hospital.id.asc())).all()
+    return [{'id': h.id, 'name': h.name, 'code': h.code, 'is_active': h.is_active} for h in hospitals]
+
+
+@app.post('/api/super-admin/hospitals')
+def create_hospital(payload: CreateHospitalPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    if db.scalar(select(Hospital).where(Hospital.code == payload.code)):
+        raise HTTPException(status_code=400, detail='Hospital code already exists')
+    hospital = Hospital(name=payload.name, code=payload.code, is_active=True)
+    db.add(hospital)
+    db.commit()
+    return {'id': hospital.id, 'name': hospital.name, 'code': hospital.code, 'is_active': hospital.is_active}
+
+
+@app.get('/api/super-admin/users')
+def list_users(user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    users = db.scalars(select(User).order_by(User.id.asc())).all()
+    return [
+        {
+            'id': u.id, 'email': u.email, 'display_name': u.display_name,
+            'role': u.role.value, 'hospital_id': u.hospital_id, 'is_active': u.is_active,
+            'hospital_name': db.get(Hospital, u.hospital_id).name if u.hospital_id else None,
+        }
+        for u in users
+    ]
+
+
+@app.post('/api/super-admin/users')
+async def create_user(payload: CreateUserPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    role = UserRole(payload.role)
+    if role != UserRole.SUPER_ADMIN and not payload.hospital_id:
+        raise HTTPException(status_code=400, detail='hospital_id required for non-SuperAdmin users')
+    if payload.hospital_id:
+        hospital = db.get(Hospital, payload.hospital_id)
+        if not hospital:
+            raise HTTPException(status_code=404, detail='Hospital not found')
+    try:
+        firebase_uid = create_firebase_user(payload.email, payload.password, payload.display_name)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'Firebase user creation failed: {e}')
+    db_user = User(
+        firebase_uid=firebase_uid, email=payload.email, display_name=payload.display_name,
+        role=role, hospital_id=payload.hospital_id, is_active=True,
+    )
+    db.add(db_user)
+    db.commit()
+    return {
+        'id': db_user.id, 'email': db_user.email, 'display_name': db_user.display_name,
+        'role': db_user.role.value, 'hospital_id': db_user.hospital_id, 'firebase_uid': firebase_uid,
+    }
+
+
+# ===== LIMS Config (SuperAdmin) =====
+
+@app.get('/api/super-admin/hospitals/{hospital_id}/lims-config')
+def get_lims_config(hospital_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    config = db.scalar(select(LimsConfig).where(LimsConfig.hospital_id == hospital_id))
+    if not config:
+        return {'hospital_id': hospital_id, 'callback_url': None, 'is_enabled': False, 'has_api_key': False}
+    return {
+        'hospital_id': config.hospital_id,
+        'callback_url': config.callback_url,
+        'is_enabled': config.is_enabled,
+        'has_api_key': bool(config.api_key_hash),
+    }
+
+
+@app.post('/api/super-admin/hospitals/{hospital_id}/lims-config')
+def create_or_update_lims_config(hospital_id: int, payload: LimsConfigPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    if not db.get(Hospital, hospital_id):
+        raise HTTPException(status_code=404, detail='Hospital not found')
+    config = db.scalar(select(LimsConfig).where(LimsConfig.hospital_id == hospital_id))
+    if config:
+        config.callback_url = payload.callback_url
+        config.is_enabled = payload.is_enabled
+    else:
+        config = LimsConfig(
+            hospital_id=hospital_id,
+            callback_url=payload.callback_url,
+            is_enabled=payload.is_enabled,
+        )
+        db.add(config)
+    db.commit()
+    return {
+        'hospital_id': config.hospital_id,
+        'callback_url': config.callback_url,
+        'is_enabled': config.is_enabled,
+        'has_api_key': bool(config.api_key_hash),
+    }
+
+
+@app.post('/api/super-admin/hospitals/{hospital_id}/lims-config/regenerate-key')
+def regenerate_lims_api_key(hospital_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    if not db.get(Hospital, hospital_id):
+        raise HTTPException(status_code=404, detail='Hospital not found')
+    config = db.scalar(select(LimsConfig).where(LimsConfig.hospital_id == hospital_id))
+    if not config:
+        config = LimsConfig(hospital_id=hospital_id)
+        db.add(config)
+    plaintext, hashed = generate_api_key()
+    config.api_key_hash = hashed
+    db.commit()
+    return {
+        'api_key': plaintext,
+        'hospital_id': hospital_id,
+        'message': 'Store this key securely — it cannot be retrieved again.',
+    }
+
+
+# ===== Frontend Endpoints (hospital-scoped) =====
+
 @app.get('/api/frontend/bootstrap')
-def bootstrap(db: Session = Depends(get_db)):
-    return bootstrap_payload(db)
+def bootstrap(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return bootstrap_payload(db, hospital_id=user.hospital_id)
 
 
 @app.get('/api/frontend/admin-dashboard')
-def admin_dashboard(db: Session = Depends(get_db)):
-    return admin_dashboard_payload(db)
+def admin_dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return admin_dashboard_payload(db, hospital_id=user.hospital_id)
 
 
 @app.get('/api/frontend/test-catalog')
-def frontend_test_catalog_route():
-    return {'items': frontend_test_catalog()}
+def frontend_test_catalog_route(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return {'items': frontend_test_catalog(db, hospital_id=user.hospital_id)}
 
 
 @app.get('/api/frontend/service-management')
-def frontend_service_management_route(db: Session = Depends(get_db)):
-    return frontend_service_management(db)
+def frontend_service_management_route(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return frontend_service_management(db, hospital_id=user.hospital_id)
+
+
+# ===== Hospital Test Catalog CRUD (Admin/SuperAdmin) =====
+
+@app.get('/api/hospital-catalog')
+def list_hospital_catalog(user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    entries = db.scalars(
+        select(HospitalTestCatalog)
+        .where(HospitalTestCatalog.hospital_id == user.hospital_id)
+        .order_by(HospitalTestCatalog.test_name.asc())
+    ).all()
+    return [
+        {
+            'id': e.id, 'test_code': e.test_code, 'test_name': e.test_name,
+            'category': e.category, 'duration_minutes': e.duration_minutes,
+            'tags': list(e.tags or []), 'condition_category': e.condition_category,
+            'is_active': e.is_active,
+        }
+        for e in entries
+    ]
+
+
+@app.post('/api/hospital-catalog/bulk-import')
+def bulk_import_hospital_catalog(payload: HospitalTestCatalogBulkImport, user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    from app.catalog import build_test_catalog
+    global_map = {item['test_code']: item for item in build_test_catalog()}
+    existing_codes = set(db.scalars(
+        select(HospitalTestCatalog.test_code).where(HospitalTestCatalog.hospital_id == user.hospital_id)
+    ).all())
+    imported = []
+    for code in payload.test_codes:
+        if code in existing_codes:
+            continue
+        item = global_map.get(code)
+        if not item:
+            continue
+        entry = HospitalTestCatalog(
+            hospital_id=user.hospital_id,
+            test_code=item['test_code'],
+            test_name=item['test_name'],
+            category=item['category'],
+            duration_minutes=int(item['duration_minutes']),
+            tags=list(item.get('tags', [])),
+            condition_category=item.get('condition_category'),
+            is_active=True,
+        )
+        db.add(entry)
+        imported.append(item['test_code'])
+    db.commit()
+    return {'imported': len(imported), 'test_codes': imported}
+
+
+@app.post('/api/hospital-catalog/import-all')
+def import_all_hospital_catalog(user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    from app.catalog import build_test_catalog
+    existing_codes = set(db.scalars(
+        select(HospitalTestCatalog.test_code).where(HospitalTestCatalog.hospital_id == user.hospital_id)
+    ).all())
+    imported = 0
+    for item in build_test_catalog():
+        if item['test_code'] in existing_codes:
+            continue
+        db.add(HospitalTestCatalog(
+            hospital_id=user.hospital_id,
+            test_code=item['test_code'],
+            test_name=item['test_name'],
+            category=item['category'],
+            duration_minutes=int(item['duration_minutes']),
+            tags=list(item.get('tags', [])),
+            condition_category=item.get('condition_category'),
+            is_active=True,
+        ))
+        imported += 1
+    db.commit()
+    return {'imported': imported}
+
+
+@app.patch('/api/hospital-catalog/{test_code}')
+def update_hospital_catalog_entry(test_code: str, payload: HospitalTestCatalogUpdate, user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    entry = db.scalar(
+        select(HospitalTestCatalog).where(
+            HospitalTestCatalog.hospital_id == user.hospital_id,
+            HospitalTestCatalog.test_code == test_code,
+        )
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail='Catalog entry not found')
+    if payload.duration_minutes is not None:
+        entry.duration_minutes = payload.duration_minutes
+    if payload.is_active is not None:
+        entry.is_active = payload.is_active
+    db.commit()
+    return {
+        'id': entry.id, 'test_code': entry.test_code, 'test_name': entry.test_name,
+        'category': entry.category, 'duration_minutes': entry.duration_minutes,
+        'is_active': entry.is_active,
+    }
+
+
+@app.delete('/api/hospital-catalog/{test_code}')
+def delete_hospital_catalog_entry(test_code: str, user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    entry = db.scalar(
+        select(HospitalTestCatalog).where(
+            HospitalTestCatalog.hospital_id == user.hospital_id,
+            HospitalTestCatalog.test_code == test_code,
+        )
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail='Catalog entry not found')
+    db.delete(entry)
+    db.commit()
+    return {'message': f'Test {test_code} removed from hospital catalog'}
+
+
+@app.get('/api/hospital-catalog/global')
+def list_global_catalog(user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN))):
+    from app.catalog import build_test_catalog
+    return [
+        {
+            'test_code': item['test_code'], 'test_name': item['test_name'],
+            'category': item['category'], 'duration_minutes': item['duration_minutes'],
+            'tags': list(item.get('tags', [])), 'condition_category': item.get('condition_category'),
+        }
+        for item in build_test_catalog()
+    ]
+
+
+# ===== Dependency CRUD (Admin/SuperAdmin) =====
+
+@app.get('/api/dependencies')
+def list_dependencies(user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    from sqlalchemy import or_
+    rules = db.scalars(
+        select(ExplicitDependencies)
+        .where(or_(
+            ExplicitDependencies.hospital_id == None,
+            ExplicitDependencies.hospital_id == user.hospital_id,
+        ))
+        .order_by(ExplicitDependencies.test_code.asc())
+    ).all()
+    return [
+        {
+            'id': r.id, 'test_code': r.test_code, 'depends_on_test_code': r.depends_on_test_code,
+            'dependency_type': r.dependency_type, 'is_strict': r.is_strict,
+            'is_global': r.hospital_id is None,
+        }
+        for r in rules
+    ]
+
+
+@app.post('/api/dependencies')
+def create_dependency(payload: ExplicitDependencyPayload, user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    existing = db.scalar(
+        select(ExplicitDependencies).where(
+            ExplicitDependencies.test_code == payload.test_code,
+            ExplicitDependencies.depends_on_test_code == payload.depends_on_test_code,
+            ExplicitDependencies.hospital_id == user.hospital_id,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail='Dependency rule already exists')
+    rule = ExplicitDependencies(
+        test_code=payload.test_code,
+        depends_on_test_code=payload.depends_on_test_code,
+        dependency_type=payload.dependency_type,
+        is_strict=payload.is_strict,
+        hospital_id=user.hospital_id,
+    )
+    db.add(rule)
+    db.commit()
+    return {
+        'id': rule.id, 'test_code': rule.test_code, 'depends_on_test_code': rule.depends_on_test_code,
+        'dependency_type': rule.dependency_type, 'is_strict': rule.is_strict, 'is_global': False,
+    }
+
+
+@app.delete('/api/dependencies/{dep_id}')
+def delete_dependency(dep_id: int, user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    rule = db.get(ExplicitDependencies, dep_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail='Dependency not found')
+    if rule.hospital_id is None:
+        raise HTTPException(status_code=403, detail='Cannot delete global dependency rules')
+    if rule.hospital_id != user.hospital_id:
+        raise HTTPException(status_code=403, detail='Cannot delete another hospital\'s dependency')
+    db.delete(rule)
+    db.commit()
+    return {'message': 'Dependency rule deleted'}
 
 
 @app.post('/api/frontend/patients')
-async def create_frontend_patient(payload: FrontendPatientPayload, db: Session = Depends(get_db)):
+async def create_frontend_patient(payload: FrontendPatientPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     requested_tests = _requested_frontend_tests(payload)
     if not requested_tests:
         raise HTTPException(status_code=400, detail='At least one test is required')
-    catalog = test_catalog_map()
+    catalog = hospital_catalog_map(db, user.hospital_id)
     invalid_tests = [item['test_name'] for item in requested_tests if item['test_name'] not in catalog]
     if invalid_tests:
         raise HTTPException(status_code=400, detail=f'Unknown tests: {", ".join(invalid_tests)}')
@@ -200,13 +628,13 @@ async def create_frontend_patient(payload: FrontendPatientPayload, db: Session =
         phone=payload.phone or None,
         arrival_time=now,
         patient_snapshot={'phone': payload.phone},
+        hospital_id=user.hospital_id,
     )
     db.add(visit)
     db.flush()
     for requested_test in requested_tests:
         item = catalog[requested_test['test_name']]
         from app.models import TestStatus, QueueStatus
-        # Tests created in WAITING state - ready for OR scheduling
         db.add(TestItem(
             visit_id=visit.id,
             test_code=item['test_code'],
@@ -218,10 +646,11 @@ async def create_frontend_patient(payload: FrontendPatientPayload, db: Session =
             priority_flag=requested_test['priority_flag'] or 'NONE',
             status=TestStatus.SCHEDULED,
             queue_status=QueueStatus.WAITING,
+            hospital_id=user.hospital_id,
         ))
     db.flush()
     # CRITICAL FIX: Use ORScheduler instead of deprecated SchedulingService
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     response = frontend_visit(visit)
@@ -233,14 +662,14 @@ async def create_frontend_patient(payload: FrontendPatientPayload, db: Session =
 
 
 @app.patch('/api/frontend/patients/{visit_public_id}')
-async def update_frontend_patient(visit_public_id: str, payload: FrontendPatientPayload, db: Session = Depends(get_db)):
+async def update_frontend_patient(visit_public_id: str, payload: FrontendPatientPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     visit = db.scalar(select(Visit).where(Visit.public_id == visit_public_id).options(selectinload(Visit.tests)))
     if visit is None:
         raise HTTPException(status_code=404, detail='Patient visit not found')
-    visit = _apply_frontend_patient_payload(db, visit, payload, reason='frontend patient updated')
+    visit = _apply_frontend_patient_payload(db, visit, payload, reason='frontend patient updated', hospital_id=user.hospital_id)
     db.commit()
     # Trigger OR optimization to re-assign any new tests
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     response = frontend_visit(visit)
@@ -250,18 +679,18 @@ async def update_frontend_patient(visit_public_id: str, payload: FrontendPatient
 
 
 @app.get('/api/visits', response_model=VisitListResponse)
-def list_visits(page: int = Query(default=1, ge=1), page_size: int = Query(default=25, ge=1, le=200), search: str | None = None, db: Session = Depends(get_db)):
-    return paginated_visits(db, page=page, page_size=page_size, search=search)
+def list_visits(page: int = Query(default=1, ge=1), page_size: int = Query(default=25, ge=1, le=200), search: str | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return paginated_visits(db, page=page, page_size=page_size, search=search, hospital_id=user.hospital_id)
 
 
 @app.get('/api/frontend/delta', response_model=DeltaResponse)
-def frontend_delta(since: datetime | None = None, db: Session = Depends(get_db)):
-    return delta_payload(db, since=since)
+def frontend_delta(since: datetime | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return delta_payload(db, since=since, hospital_id=user.hospital_id)
 
 
 @app.post('/api/specialists')
-async def create_specialist(payload: SpecialistPayload, db: Session = Depends(get_db)):
-    specialist = Specialist(name=payload.name, gender=payload.gender, shift_start=datetime.strptime(payload.shift_start[:5], '%H:%M').time(), shift_end=datetime.strptime(payload.shift_end[:5], '%H:%M').time(), is_active=payload.is_active)
+async def create_specialist(payload: SpecialistPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    specialist = Specialist(name=payload.name, gender=payload.gender, shift_start=datetime.strptime(payload.shift_start[:5], '%H:%M').time(), shift_end=datetime.strptime(payload.shift_end[:5], '%H:%M').time(), is_active=payload.is_active, hospital_id=user.hospital_id)
     db.add(specialist)
     db.flush()
     db.commit()
@@ -272,7 +701,7 @@ async def create_specialist(payload: SpecialistPayload, db: Session = Depends(ge
 
 
 @app.patch('/api/specialists/{specialist_id}')
-async def update_specialist(specialist_id: int, payload: SpecialistPayload, db: Session = Depends(get_db)):
+async def update_specialist(specialist_id: int, payload: SpecialistPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     specialist = db.get(Specialist, specialist_id)
     if specialist is None:
         raise HTTPException(status_code=404, detail='Specialist not found')
@@ -283,7 +712,7 @@ async def update_specialist(specialist_id: int, payload: SpecialistPayload, db: 
     specialist.is_active = payload.is_active
     db.commit()
     # Trigger OR optimization to re-assign based on new specialist availability
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     response = frontend_specialist(specialist)
@@ -293,7 +722,7 @@ async def update_specialist(specialist_id: int, payload: SpecialistPayload, db: 
 
 
 @app.delete('/api/specialists/{specialist_id}')
-async def delete_specialist(specialist_id: int, db: Session = Depends(get_db)):
+async def delete_specialist(specialist_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     specialist = db.get(Specialist, specialist_id)
     if specialist is None:
         raise HTTPException(status_code=404, detail='Specialist not found')
@@ -305,7 +734,7 @@ async def delete_specialist(specialist_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/labs')
-async def create_lab(payload: LabPayload, db: Session = Depends(get_db)):
+async def create_lab(payload: LabPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     lab = Lab(
         name=payload.name,
         category=payload.category,
@@ -317,11 +746,12 @@ async def create_lab(payload: LabPayload, db: Session = Depends(get_db)):
         is_active=payload.is_active,
         specialist_id=payload.specialist_id,
         supported_test_codes=[],
+        hospital_id=user.hospital_id,
     )
     db.add(lab)
     db.flush()
     # Trigger OR optimization to re-assign tests based on new lab availability
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     response = frontend_lab(db, lab)
@@ -331,7 +761,7 @@ async def create_lab(payload: LabPayload, db: Session = Depends(get_db)):
 
 
 @app.post('/api/lab-groups')
-async def create_lab_group(payload: LabGroupPayload, db: Session = Depends(get_db)):
+async def create_lab_group(payload: LabGroupPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if len(payload.lab_ids) < 2:
         raise HTTPException(status_code=400, detail='At least two labs are required to create a group')
 
@@ -347,7 +777,7 @@ async def create_lab_group(payload: LabGroupPayload, db: Session = Depends(get_d
     if already_grouped:
         raise HTTPException(status_code=400, detail=f'Labs already grouped: {", ".join(already_grouped)}')
 
-    group = LabGroup(name=payload.name, category=payload.category)
+    group = LabGroup(name=payload.name, category=payload.category, hospital_id=user.hospital_id)
     db.add(group)
     db.flush()
 
@@ -368,7 +798,7 @@ async def create_lab_group(payload: LabGroupPayload, db: Session = Depends(get_d
 
 
 @app.patch('/api/labs/{lab_id}')
-async def update_lab(lab_id: int, payload: LabPayload, db: Session = Depends(get_db)):
+async def update_lab(lab_id: int, payload: LabPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     lab = db.get(Lab, lab_id)
     if lab is None:
         raise HTTPException(status_code=404, detail='Lab not found')
@@ -385,7 +815,7 @@ async def update_lab(lab_id: int, payload: LabPayload, db: Session = Depends(get
         lab.closing_time = datetime.strptime(payload.closing_time[:8], '%H:%M:%S').time()
     db.commit()
     # Trigger OR optimization to re-assign based on updated lab configuration
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     response = frontend_lab(db, lab)
@@ -395,7 +825,7 @@ async def update_lab(lab_id: int, payload: LabPayload, db: Session = Depends(get
 
 
 @app.delete('/api/labs/{lab_id}')
-async def delete_lab(lab_id: int, db: Session = Depends(get_db)):
+async def delete_lab(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from app.models import TestStatus, QueueStatus
     lab = db.get(Lab, lab_id)
     if lab is None:
@@ -408,7 +838,7 @@ async def delete_lab(lab_id: int, db: Session = Depends(get_db)):
         test.caution_reason = 'Assigned lab was deleted.'
     db.delete(lab)
     # Use ORScheduler instead of deprecated SchedulingService
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     emit_nowait('lab.updated', {'id': f'l{lab_id}', 'deleted': True})
@@ -417,27 +847,27 @@ async def delete_lab(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.get('/api/labs/{lab_id}/waiting-candidates')
-def waiting_candidates(lab_id: int, db: Session = Depends(get_db)):
+def waiting_candidates(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab not found')
     return waiting_candidates_payload(db, lab_id)
 
 
 @app.get('/api/queues/{lab_id}')
-def get_queue(lab_id: int, db: Session = Depends(get_db)):
+def get_queue(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     return QueueService(db, SchedulingService(db)).snapshot(lab_id)
 
 
 @app.post('/api/queues/{lab_id}/accept-current')
-async def accept_current(lab_id: int, db: Session = Depends(get_db)):
+async def accept_current(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).accept_current(lab_id)
     db.commit()
     # Trigger OR optimization to immediately fill the NEXT slot
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     # Fetch updated snapshot with new NEXT patient
@@ -447,7 +877,7 @@ async def accept_current(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/queues/{lab_id}/move-current-to-pending')
-async def move_current_to_pending(lab_id: int, db: Session = Depends(get_db)):
+async def move_current_to_pending(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).move_current_to_pending(lab_id)
@@ -458,7 +888,7 @@ async def move_current_to_pending(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/queues/{lab_id}/move-next-to-pending')
-async def move_next_to_pending(lab_id: int, db: Session = Depends(get_db)):
+async def move_next_to_pending(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).move_next_to_pending(lab_id)
@@ -469,7 +899,7 @@ async def move_next_to_pending(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/queues/{lab_id}/accept-from-pending')
-async def accept_from_pending(lab_id: int, payload: AcceptPendingPayload | None = None, db: Session = Depends(get_db)):
+async def accept_from_pending(lab_id: int, payload: AcceptPendingPayload | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     try:
@@ -482,13 +912,13 @@ async def accept_from_pending(lab_id: int, payload: AcceptPendingPayload | None 
 
 
 @app.post('/api/queues/{lab_id}/complete-current')
-async def complete_current(lab_id: int, db: Session = Depends(get_db)):
+async def complete_current(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if db.get(Lab, lab_id) is None:
         raise HTTPException(status_code=404, detail='Lab queue not found')
     snapshot = QueueService(db, SchedulingService(db)).complete_current(lab_id)
     db.commit()
     # Trigger OR optimization to schedule next tests
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     emit_nowait('queue.updated', {'labId': f'l{lab_id}', 'snapshot': snapshot})
@@ -497,7 +927,7 @@ async def complete_current(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/phr-sync/patients')
-async def phr_sync_patients(payload: list[VisitPayload], db: Session = Depends(get_db)):
+async def phr_sync_patients(payload: list[VisitPayload], hospital_id: int = Depends(get_lims_hospital), db: Session = Depends(get_db)):
     created: list[str] = []
     for item in payload:
         snapshot = dict(item.patient_snapshot)
@@ -513,11 +943,11 @@ async def phr_sync_patients(payload: list[VisitPayload], db: Session = Depends(g
             phone=item.phone or snapshot.get('phone'),
             arrival_time=item.arrival_time,
             patient_snapshot=snapshot,
+            hospital_id=hospital_id,
         )
         db.add(visit)
         db.flush()
         for test_payload in item.tests:
-            from app.models import TestStatus, QueueStatus
             db.add(TestItem(
                 visit_id=visit.id,
                 test_code=test_payload['test_code'],
@@ -528,12 +958,12 @@ async def phr_sync_patients(payload: list[VisitPayload], db: Session = Depends(g
                 condition_category=test_payload.get('condition_category'),
                 status=TestStatus.SCHEDULED,
                 queue_status=QueueStatus.WAITING,
+                hospital_id=hospital_id,
             ))
         db.flush()
         created.append(visit.public_id)
     db.commit()
-    # Use OR-Scheduler for all patients
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     emit_nowait('visit.updated', {'created': created})
@@ -542,8 +972,8 @@ async def phr_sync_patients(payload: list[VisitPayload], db: Session = Depends(g
 
 
 @app.post('/api/scheduling/run')
-async def run_scheduling(db: Session = Depends(get_db)):
-    or_scheduler = ORScheduler(db)
+async def run_scheduling(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     result = or_scheduler.run_optimization()
     db.commit()
     emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
@@ -552,18 +982,18 @@ async def run_scheduling(db: Session = Depends(get_db)):
 
 # ===== OR Scheduler Endpoints =====
 @app.post('/api/or/optimize')
-async def run_or_optimization(db: Session = Depends(get_db)):
+async def run_or_optimization(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Run OR-Tools optimization to assign tests to labs."""
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     result = or_scheduler.run_optimization()
     emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
     return result
 
 
 @app.get('/api/or/schedule-preview')
-async def get_or_schedule_preview(db: Session = Depends(get_db)):
+async def get_or_schedule_preview(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Preview optimal assignments without applying them."""
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     assignments = or_scheduler.optimize_schedule()
     return {
         'assignments_count': len(assignments),
@@ -694,11 +1124,11 @@ async def get_poker_session_stats(session_id: str, db: Session = Depends(get_db)
 # ==========================================
 
 @app.get('/api/lobby/next')
-def get_next_patients(db: Session = Depends(get_db)):
+def get_next_patients(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get patients waiting for next test assignment (lobby optimization candidates)."""
     from app.models import TestItem, TestStatus, QueueStatus
     # Run OR optimization to ensure queue is up-to-date
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     # Return tests that are waiting for assignment
     waiting_tests = db.scalars(
@@ -725,7 +1155,7 @@ def get_next_patients(db: Session = Depends(get_db)):
 
 
 @app.get('/api/lobby/pending')
-def get_pending_patients(db: Session = Depends(get_db)):
+def get_pending_patients(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get patients in pending state (paused/blocked tests)."""
     from app.models import TestItem, QueueStatus
     pending_tests = db.scalars(
@@ -749,7 +1179,7 @@ def get_pending_patients(db: Session = Depends(get_db)):
 
 
 @app.get('/api/labs/{lab_id}/current')
-def get_current_patient_in_lab(lab_id: int, db: Session = Depends(get_db)):
+def get_current_patient_in_lab(lab_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get the patient currently being processed in a lab."""
     from app.models import TestItem, QueueStatus
     test = db.scalar(
@@ -774,7 +1204,7 @@ def get_current_patient_in_lab(lab_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/tests/{test_id}/start')
-def start_test(test_id: int, db: Session = Depends(get_db)):
+def start_test(test_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Mark a test as in-progress (specialist started working on it)."""
     from app.models import TestItem, TestStatus, QueueStatus
     test = db.get(TestItem, test_id)
@@ -782,6 +1212,7 @@ def start_test(test_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail='Test not found')
     test.status = TestStatus.IN_PROGRESS
     test.queue_status = QueueStatus.CURRENT
+    test.started_at = datetime.now(timezone.utc)
     db.commit()
     return {
         'test_id': test.id,
@@ -791,11 +1222,10 @@ def start_test(test_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/tests/{test_id}/complete')
-def complete_test(test_id: int, db: Session = Depends(get_db)):
-    """Mark a test as completed."""
-    from app.models import TestItem, TestStatus, QueueStatus, CompletedTestSnapshot
-    from datetime import datetime, timezone
+def complete_test(test_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.models import CompletedTestSnapshot
     from app.services.patient_ids import patient_id_date
+    from app.services.lims_webhook import fire_test_completed_webhook
 
     test = db.scalar(
         select(TestItem).where(TestItem.id == test_id).options(selectinload(TestItem.visit))
@@ -808,7 +1238,6 @@ def complete_test(test_id: int, db: Session = Depends(get_db)):
     test.queue_status = QueueStatus.DONE
     test.completed_at = completed_at
 
-    # Create snapshot record
     db.add(CompletedTestSnapshot(
         snapshot_date=patient_id_date(completed_at),
         patient_public_id=test.visit.public_id,
@@ -821,12 +1250,12 @@ def complete_test(test_id: int, db: Session = Depends(get_db)):
         lab_name=test.assigned_lab.name if test.assigned_lab else None,
     ))
 
-    # Delete any existing queue entry
     queue_entry = db.scalar(select(QueueEntry).where(QueueEntry.test_item_id == test_id))
     if queue_entry:
         db.delete(queue_entry)
 
     db.commit()
+    fire_test_completed_webhook(test.hospital_id, test.visit, test)
     return {
         'test_id': test.id,
         'status': test.status.value,
@@ -836,7 +1265,7 @@ def complete_test(test_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/tests/{test_id}/unblock')
-def unblock_test(test_id: int, db: Session = Depends(get_db)):
+def unblock_test(test_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Unblock a test and return it to NOT_QUEUED so OR-Solver can route it."""
     from app.models import TestItem, TestStatus, QueueStatus
     test = db.get(TestItem, test_id)
@@ -850,7 +1279,7 @@ def unblock_test(test_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     # Run OR optimization to re-assign
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
 
     return {
@@ -861,7 +1290,7 @@ def unblock_test(test_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/tests/{test_id}/pending')
-def specialist_push_to_pending(test_id: int, db: Session = Depends(get_db)):
+def specialist_push_to_pending(test_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Push a test to pending state (specialist needs patient to wait)."""
     from app.models import TestItem, TestStatus, QueueStatus, QueueEntry, QueueEntryType
     from datetime import datetime, timezone
@@ -896,7 +1325,7 @@ def specialist_push_to_pending(test_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/visits/{visit_id}/block')
-def receptionist_block_visit(visit_id: int, db: Session = Depends(get_db)):
+def receptionist_block_visit(visit_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Block all tests in a visit (receptionist action) - blocks without locking to a lab."""
     from app.models import TestItem, TestStatus
     tests = db.scalars(select(TestItem).where(TestItem.visit_id == visit_id)).all()
@@ -909,7 +1338,7 @@ def receptionist_block_visit(visit_id: int, db: Session = Depends(get_db)):
 
 
 @app.post('/api/visits/{visit_id}/unblock')
-def receptionist_unblock_visit(visit_id: int, db: Session = Depends(get_db)):
+def receptionist_unblock_visit(visit_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Unblock all tests in a visit (receptionist action) - re-considers for scheduling."""
     from app.models import TestItem, TestStatus, QueueStatus
     tests = db.scalars(select(TestItem).where(TestItem.visit_id == visit_id)).all()
@@ -922,16 +1351,19 @@ def receptionist_unblock_visit(visit_id: int, db: Session = Depends(get_db)):
                 test.queue_status = QueueStatus.WAITING
     db.commit()
     # Run OR optimization to re-assign
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     return {'message': 'Visit unblocked', 'visit_id': visit_id}
 
 
 @app.get('/api/frontend/visits')
-def get_frontend_visits(db: Session = Depends(get_db)):
+def get_frontend_visits(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Get all visits for the frontend Patient Records table."""
     from app.models import TestItem
-    visits = db.scalars(select(Visit).options(selectinload(Visit.tests))).all()
+    stmt = select(Visit).options(selectinload(Visit.tests))
+    if user.hospital_id:
+        stmt = stmt.where(Visit.hospital_id == user.hospital_id)
+    visits = db.scalars(stmt).all()
     result = []
     for v in visits:
         test_names = [t.test_name for t in v.tests]
@@ -963,14 +1395,10 @@ def get_frontend_visits(db: Session = Depends(get_db)):
 
 
 @app.post('/api/lims/ingest')
-async def ingest_patient_from_lims(request: Request, db: Session = Depends(get_db)):
-    """Ingest patient data from LIMS webhook."""
-    from app.models import TestItem, TestStatus, QueueStatus
-    from app.catalog import test_catalog_map
-
+async def ingest_patient_from_lims(request: Request, hospital_id: int = Depends(get_lims_hospital), db: Session = Depends(get_db)):
     payload = await request.json()
+    catalog = hospital_catalog_map(db, hospital_id)
 
-    # 1. Create visit
     visit = Visit(
         public_id=_next_public_id(db, datetime.now()),
         phr_reference_id=payload.get('lims_patient_id') or f'LIMS-{datetime.now().strftime("%Y%m%d%H%M%S%f")}',
@@ -979,17 +1407,13 @@ async def ingest_patient_from_lims(request: Request, db: Session = Depends(get_d
         patient_gender=payload.get('gender', 'Any'),
         priority_type=payload.get('priority_type', 'Routine'),
         arrival_time=datetime.now().astimezone(),
-        patient_snapshot={}
+        patient_snapshot={},
+        hospital_id=hospital_id,
     )
     db.add(visit)
     db.flush()
 
-    # 2. Add tests
-    catalog = test_catalog_map()
-
-    # Handle both payload formats securely
     tests_list = payload.get('requested_tests', payload.get('tests', []))
-
     for test_payload in tests_list:
         test_code = test_payload.get('test_id') or test_payload.get('test_code')
         test_name = test_payload.get('test_name')
@@ -1004,13 +1428,6 @@ async def ingest_patient_from_lims(request: Request, db: Session = Depends(get_d
             item = catalog[test_name]
 
         if item:
-            status = TestStatus.SCHEDULED
-            queue_status = QueueStatus.NOT_QUEUED
-
-            # If Ultrasound, block it initially (requires full bladder)
-            if item['test_code'] == 'T0063':
-                queue_status = QueueStatus.PENDING
-
             db.add(TestItem(
                 visit_id=visit.id,
                 test_code=item['test_code'],
@@ -1018,26 +1435,86 @@ async def ingest_patient_from_lims(request: Request, db: Session = Depends(get_d
                 category=item['category'],
                 duration_minutes=int(item['duration_minutes']),
                 tags=list(item.get('tags', [])),
-                status=status,
-                queue_status=queue_status
+                status=TestStatus.SCHEDULED,
+                queue_status=QueueStatus.WAITING,
+                hospital_id=hospital_id,
             ))
 
     db.commit()
-
-    # 3. Run OR optimization
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=hospital_id)
     or_scheduler.run_optimization()
-
+    db.commit()
+    emit_nowait('visit.updated', {'public_id': visit.public_id})
     return {
         'visit_id': visit.id,
         'public_id': visit.public_id,
-        'message': 'Patient successfully routed by OR-Solver'
+        'message': 'Patient ingested successfully',
     }
+
+
+# ===== LIMS Status Endpoints (API key auth) =====
+
+@app.get('/api/lims/visit/{phr_reference_id}/status')
+def lims_visit_status(phr_reference_id: str, hospital_id: int = Depends(get_lims_hospital), db: Session = Depends(get_db)):
+    visit = db.scalar(
+        select(Visit)
+        .where(Visit.phr_reference_id == phr_reference_id, Visit.hospital_id == hospital_id)
+        .options(selectinload(Visit.tests))
+    )
+    if not visit:
+        raise HTTPException(status_code=404, detail='Visit not found')
+    return {
+        'phr_reference_id': visit.phr_reference_id,
+        'public_id': visit.public_id,
+        'patient_name': visit.patient_name,
+        'arrival_time': visit.arrival_time.isoformat(),
+        'tests': [
+            {
+                'test_code': t.test_code, 'test_name': t.test_name,
+                'status': t.status.value, 'queue_status': t.queue_status.value,
+                'assigned_lab_id': t.assigned_lab_id,
+                'allocated_at': t.allocated_at.isoformat() if t.allocated_at else None,
+                'started_at': t.started_at.isoformat() if t.started_at else None,
+                'completed_at': t.completed_at.isoformat() if t.completed_at else None,
+            }
+            for t in visit.tests
+        ],
+    }
+
+
+@app.post('/api/lims/visits/status')
+def lims_bulk_visit_status(payload: dict, hospital_id: int = Depends(get_lims_hospital), db: Session = Depends(get_db)):
+    phr_ids = payload.get('phr_reference_ids', [])
+    visits = db.scalars(
+        select(Visit)
+        .where(Visit.phr_reference_id.in_(phr_ids), Visit.hospital_id == hospital_id)
+        .options(selectinload(Visit.tests))
+    ).all()
+    return [
+        {
+            'phr_reference_id': v.phr_reference_id,
+            'public_id': v.public_id,
+            'patient_name': v.patient_name,
+            'arrival_time': v.arrival_time.isoformat(),
+            'tests': [
+                {
+                    'test_code': t.test_code, 'test_name': t.test_name,
+                    'status': t.status.value, 'queue_status': t.queue_status.value,
+                    'assigned_lab_id': t.assigned_lab_id,
+                    'allocated_at': t.allocated_at.isoformat() if t.allocated_at else None,
+                    'started_at': t.started_at.isoformat() if t.started_at else None,
+                    'completed_at': t.completed_at.isoformat() if t.completed_at else None,
+                }
+                for t in v.tests
+            ],
+        }
+        for v in visits
+    ]
 
 
 # ===== Demo Data Seed Endpoints (For Development/Demo) =====
 @app.post('/api/seed/lims-patients')
-async def seed_lims_patients(db: Session = Depends(get_db)):
+async def seed_lims_patients(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Seed patients from VISIT_TEMPLATES using PHR sync format."""
     from app.seed_data import VISIT_TEMPLATES
     
@@ -1092,7 +1569,7 @@ async def seed_lims_patients(db: Session = Depends(get_db)):
     db.commit()
     
     # Run OR optimization for all new patients
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     
@@ -1105,7 +1582,7 @@ async def seed_lims_patients(db: Session = Depends(get_db)):
 
 
 @app.post('/api/seed/specialists')
-async def seed_mock_specialists(db: Session = Depends(get_db)):
+async def seed_mock_specialists(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Seed mock specialists from DEFAULT_SPECIALISTS."""
     from app.seed_data import DEFAULT_SPECIALISTS
     from datetime import time
@@ -1150,7 +1627,7 @@ async def seed_mock_specialists(db: Session = Depends(get_db)):
 
 
 @app.post('/api/seed/labs')
-async def seed_mock_labs(db: Session = Depends(get_db)):
+async def seed_mock_labs(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Seed mock labs from DEFAULT_LABS."""
     from app.seed_data import DEFAULT_LABS
     
@@ -1196,7 +1673,7 @@ async def seed_mock_labs(db: Session = Depends(get_db)):
     db.commit()
     
     # Trigger OR optimization for new labs
-    or_scheduler = ORScheduler(db)
+    or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
     or_scheduler.run_optimization()
     db.commit()
     
@@ -1212,4 +1689,16 @@ async def seed_mock_labs(db: Session = Depends(get_db)):
     }
 
 
-application = mount(app)
+asgi_app = mount(app)
+
+# CORS must be added on the outer ASGI app so headers are present
+# even on responses that pass through the Socket.IO layer.
+from starlette.middleware.cors import CORSMiddleware as _CM
+application = _CM(
+    asgi_app,
+    allow_origins=['*'] if settings.allow_all_cors_origins else list(settings.cors_origins),
+    allow_origin_regex=settings.cors_origin_regex,
+    allow_credentials=True,
+    allow_methods=['*'],
+    allow_headers=['*'],
+)

@@ -79,3 +79,74 @@ class DeltaResponse(BaseModel):
     groups: list[dict[str, Any]]
     specialists: list[dict[str, Any]]
     metrics: dict[str, Any]
+
+
+class LoginPayload(BaseModel):
+    firebase_token: str
+
+
+class CreateHospitalPayload(BaseModel):
+    name: str
+    code: str
+
+
+class CreateUserPayload(BaseModel):
+    email: str
+    password: str
+    display_name: str
+    role: str
+    hospital_id: int | None = None
+
+
+class HospitalTestCatalogEntry(BaseModel):
+    test_code: str
+    test_name: str
+    category: str
+    duration_minutes: int
+    tags: list[str] = Field(default_factory=list)
+    condition_category: str | None = None
+    is_active: bool = True
+
+
+class HospitalTestCatalogBulkImport(BaseModel):
+    test_codes: list[str]
+
+
+class HospitalTestCatalogUpdate(BaseModel):
+    duration_minutes: int | None = None
+    is_active: bool | None = None
+
+
+class ExplicitDependencyPayload(BaseModel):
+    test_code: str
+    depends_on_test_code: str
+    dependency_type: str = 'must_complete_before'
+    is_strict: bool = True
+
+
+class LimsConfigPayload(BaseModel):
+    callback_url: str | None = None
+    is_enabled: bool = False
+
+
+class LimsTestStatusResponse(BaseModel):
+    test_code: str
+    test_name: str
+    status: str
+    queue_status: str
+    assigned_lab_id: int | None = None
+    allocated_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class LimsVisitStatusResponse(BaseModel):
+    phr_reference_id: str
+    public_id: str
+    patient_name: str
+    arrival_time: datetime
+    tests: list[LimsTestStatusResponse]
+
+
+class LimsBulkStatusPayload(BaseModel):
+    phr_reference_ids: list[str]

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models import ExplicitDependencies, Lab, LabGroup, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
+from app.models import ExplicitDependencies, HospitalTestCatalog, Lab, LabGroup, QueueEntry, QueueEntryType, QueueCursor, QueueStatus, Specialist, TestItem, TestStatus, Visit
 from app.catalog import build_test_catalog
 from app.seed import TEST_DEPENDENCIES
 from app.services.scheduling import SchedulingService
@@ -174,7 +174,37 @@ def frontend_specialist(item: Specialist) -> dict:
     }
 
 
-def frontend_test_catalog() -> list[dict]:
+def _hospital_catalog(session: Session, hospital_id: int | None) -> list[dict]:
+    if hospital_id is not None:
+        entries = session.scalars(
+            select(HospitalTestCatalog)
+            .where(HospitalTestCatalog.hospital_id == hospital_id, HospitalTestCatalog.is_active == True)
+            .order_by(HospitalTestCatalog.test_name.asc())
+        ).all()
+        if entries:
+            return [
+                {
+                    'test_name': e.test_name,
+                    'test_code': e.test_code,
+                    'category': e.category,
+                    'duration_minutes': e.duration_minutes,
+                    'tags': list(e.tags or []),
+                    'condition_category': e.condition_category,
+                }
+                for e in entries
+            ]
+    return build_test_catalog()
+
+
+def hospital_catalog_map(session: Session, hospital_id: int | None) -> dict[str, dict]:
+    return {item['test_name']: dict(item) for item in _hospital_catalog(session, hospital_id)}
+
+
+def frontend_test_catalog(session: Session | None = None, hospital_id: int | None = None) -> list[dict]:
+    if session is not None:
+        catalog = _hospital_catalog(session, hospital_id)
+    else:
+        catalog = build_test_catalog()
     return [
         {
             'test_name': item['test_name'],
@@ -184,15 +214,21 @@ def frontend_test_catalog() -> list[dict]:
             'tags': list(item.get('tags', [])),
             'condition_category': item.get('condition_category'),
         }
-        for item in build_test_catalog()
+        for item in catalog
     ]
 
 
-def frontend_service_management(session: Session) -> dict:
-    catalog = sorted(build_test_catalog(), key=lambda item: item['test_name'].lower())
+def frontend_service_management(session: Session, hospital_id: int | None = None) -> dict:
+    catalog = sorted(_hospital_catalog(session, hospital_id), key=lambda item: item['test_name'].lower())
     test_lookup = {item['test_code']: item['test_name'] for item in catalog}
+    dep_filter = or_(
+        ExplicitDependencies.hospital_id == None,
+        ExplicitDependencies.hospital_id == hospital_id,
+    ) if hospital_id is not None else (ExplicitDependencies.hospital_id == None)
     db_dependency_rules = session.scalars(
-        select(ExplicitDependencies).order_by(
+        select(ExplicitDependencies)
+        .where(dep_filter)
+        .order_by(
             ExplicitDependencies.test_code.asc(),
             ExplicitDependencies.depends_on_test_code.asc(),
         )
@@ -217,6 +253,7 @@ def frontend_service_management(session: Session) -> dict:
                 'depends_on_test_name': test_lookup.get(rule.depends_on_test_code),
                 'dependency_type': rule.dependency_type,
                 'is_strict': rule.is_strict,
+                'is_global': rule.hospital_id is None,
             }
         )
 
@@ -239,6 +276,7 @@ def frontend_service_management(session: Session) -> dict:
                 'depends_on_test_name': test_lookup.get(rule['depends_on_test_code']),
                 'dependency_type': rule['dependency_type'],
                 'is_strict': rule['is_strict'],
+                'is_global': True,
             }
         )
         fallback_rule_id -= 1
@@ -259,10 +297,7 @@ def frontend_service_management(session: Session) -> dict:
             }
             for item in catalog
         ],
-        'dependency_rules': [
-            rule
-            for rule in dependency_rules
-        ],
+        'dependency_rules': dependency_rules,
     }
 
 
@@ -333,11 +368,17 @@ def waiting_candidates_payload(session: Session, lab_id: int) -> dict:
     return {'lab_id': f'l{lab_id}', 'items': items}
 
 
-def bootstrap_payload(session: Session) -> dict:
-    visits = session.scalars(select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc())).all()
-    labs = session.scalars(select(Lab).options(selectinload(Lab.group)).order_by(Lab.id.asc())).all()
-    groups = session.scalars(select(LabGroup).options(selectinload(LabGroup.labs)).order_by(LabGroup.id.asc())).all()
-    specialists = session.scalars(select(Specialist).order_by(Specialist.id.asc())).all()
+def _hospital_filter(stmt, model, hospital_id: int | None):
+    if hospital_id is not None and hasattr(model, 'hospital_id'):
+        return stmt.where(model.hospital_id == hospital_id)
+    return stmt
+
+
+def bootstrap_payload(session: Session, hospital_id: int | None = None) -> dict:
+    visits = session.scalars(_hospital_filter(select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc()), Visit, hospital_id)).all()
+    labs = session.scalars(_hospital_filter(select(Lab).options(selectinload(Lab.group)).order_by(Lab.id.asc()), Lab, hospital_id)).all()
+    groups = session.scalars(_hospital_filter(select(LabGroup).options(selectinload(LabGroup.labs)).order_by(LabGroup.id.asc()), LabGroup, hospital_id)).all()
+    specialists = session.scalars(_hospital_filter(select(Specialist).order_by(Specialist.id.asc()), Specialist, hospital_id)).all()
     return {
         'visits': [frontend_visit(visit) for visit in visits],
         'labs': [frontend_lab(session, lab) for lab in labs],
@@ -346,9 +387,9 @@ def bootstrap_payload(session: Session) -> dict:
     }
 
 
-def admin_dashboard_payload(session: Session) -> dict:
-    visits = session.scalars(select(Visit).options(selectinload(Visit.tests))).all()
-    labs = session.scalars(select(Lab).order_by(Lab.id.asc())).all()
+def admin_dashboard_payload(session: Session, hospital_id: int | None = None) -> dict:
+    visits = session.scalars(_hospital_filter(select(Visit).options(selectinload(Visit.tests)), Visit, hospital_id)).all()
+    labs = session.scalars(_hospital_filter(select(Lab).order_by(Lab.id.asc()), Lab, hospital_id)).all()
     total_tests_completed = 0
     deferred_tests = 0
     unschedulable_tests = 0
@@ -381,9 +422,12 @@ def admin_dashboard_payload(session: Session) -> dict:
     }
 
 
-def paginated_visits(session: Session, page: int, page_size: int, search: str | None = None) -> dict:
+def paginated_visits(session: Session, page: int, page_size: int, search: str | None = None, hospital_id: int | None = None) -> dict:
     stmt = select(Visit).options(selectinload(Visit.tests)).order_by(Visit.arrival_time.asc(), Visit.id.asc())
     count_stmt = select(func.count()).select_from(Visit)
+    if hospital_id is not None:
+        stmt = stmt.where(Visit.hospital_id == hospital_id)
+        count_stmt = count_stmt.where(Visit.hospital_id == hospital_id)
     if search:
         pattern = f'%{search.strip()}%'
         filt = or_(Visit.public_id.ilike(pattern), Visit.phr_reference_id.ilike(pattern), Visit.patient_name.ilike(pattern))
@@ -395,18 +439,18 @@ def paginated_visits(session: Session, page: int, page_size: int, search: str | 
     return {'items': [frontend_visit(item) for item in items], 'total': total, 'page': page, 'page_size': page_size, 'has_more': offset + len(items) < total}
 
 
-def delta_payload(session: Session, since: datetime | None = None) -> dict:
+def delta_payload(session: Session, since: datetime | None = None, hospital_id: int | None = None) -> dict:
     now = datetime.now(timezone.utc)
     if since is None:
-        visits = session.scalars(select(Visit).options(selectinload(Visit.tests))).all()
-        labs = session.scalars(select(Lab).options(selectinload(Lab.group))).all()
-        groups = session.scalars(select(LabGroup).options(selectinload(LabGroup.labs))).all()
-        specialists = session.scalars(select(Specialist)).all()
+        visits = session.scalars(_hospital_filter(select(Visit).options(selectinload(Visit.tests)), Visit, hospital_id)).all()
+        labs = session.scalars(_hospital_filter(select(Lab).options(selectinload(Lab.group)), Lab, hospital_id)).all()
+        groups = session.scalars(_hospital_filter(select(LabGroup).options(selectinload(LabGroup.labs)), LabGroup, hospital_id)).all()
+        specialists = session.scalars(_hospital_filter(select(Specialist), Specialist, hospital_id)).all()
     else:
-        visits = session.scalars(select(Visit).where(Visit.updated_at >= since).options(selectinload(Visit.tests))).all()
-        labs = session.scalars(select(Lab).where(Lab.updated_at >= since).options(selectinload(Lab.group))).all()
-        groups = session.scalars(select(LabGroup).where(LabGroup.updated_at >= since).options(selectinload(LabGroup.labs))).all()
-        specialists = session.scalars(select(Specialist).where(Specialist.updated_at >= since)).all()
+        visits = session.scalars(_hospital_filter(select(Visit).where(Visit.updated_at >= since).options(selectinload(Visit.tests)), Visit, hospital_id)).all()
+        labs = session.scalars(_hospital_filter(select(Lab).where(Lab.updated_at >= since).options(selectinload(Lab.group)), Lab, hospital_id)).all()
+        groups = session.scalars(_hospital_filter(select(LabGroup).where(LabGroup.updated_at >= since).options(selectinload(LabGroup.labs)), LabGroup, hospital_id)).all()
+        specialists = session.scalars(_hospital_filter(select(Specialist).where(Specialist.updated_at >= since), Specialist, hospital_id)).all()
     return {
         'since': since,
         'now': now,
@@ -414,5 +458,5 @@ def delta_payload(session: Session, since: datetime | None = None) -> dict:
         'labs': [frontend_lab(session, lab) for lab in labs],
         'groups': [frontend_lab_group(session, group) for group in groups],
         'specialists': [frontend_specialist(item) for item in specialists],
-        'metrics': admin_dashboard_payload(session),
+        'metrics': admin_dashboard_payload(session, hospital_id=hospital_id),
     }

@@ -215,59 +215,80 @@ GET    /api/admin/dashboard           - Statistics and metrics
 ### Environment Variables
 ```env
 # Database
-DATABASE_URL=postgresql://postgres:postgres@postgres:5432/lab_scheduling
+DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:5432/lab_scheduling
+POSTGRES_PORT=5432
 
 # Backend
-BACKEND_PORT=8000
-RESET_DB_ON_STARTUP=true
+BACKEND_PORT=8001
+BACKEND_CORS_ORIGINS=http://localhost:5174,http://127.0.0.1:5174
 SEED_ON_STARTUP=true
+RESET_DB_ON_STARTUP=false
 
 # Frontend
-FRONTEND_PORT=5173
-VITE_BACKEND_URL=http://localhost:8000
+FRONTEND_PORT=5174
+VITE_API_BASE_URL=http://localhost:8001
 ```
 
-### Docker Services
-- **postgres**: PostgreSQL 16 Alpine
-- **backend**: FastAPI application (port 8000)
-- **frontend**: React Vite dev server (port 5173)
+### Local Services
+- **postgres**: Local PostgreSQL instance on port 5432
+- **backend**: FastAPI application (port 8001)
+- **frontend**: React Vite dev server (port 5174)
 
 ---
 
 ## Development Setup
 
 ### Prerequisites
-- Docker & Docker Compose
-- Node.js 18+ (for local frontend development)
-- Python 3.11+ (for local backend development)
+- PostgreSQL 16+
+- Node.js 20+
+- Python 3.11+
 
-### Running with Docker
-```bash
-# Start all services
-docker-compose up -d
+### Local First (Recommended)
 
-# View logs
-docker-compose logs -f backend
-docker-compose logs -f frontend
+1. Create a root `.env` from `.env.example` and confirm values.
+2. Start PostgreSQL locally and ensure database `lab_scheduling` exists.
+3. Run backend from `Backend/` on `BACKEND_PORT`.
+4. Run frontend from `Frontend/` on `FRONTEND_PORT`.
 
-# Restart backend after code changes
-docker-compose restart backend
+### Start PostgreSQL (Windows)
+```powershell
+# If psql is available
+psql -U postgres -h localhost -p 5432 -c "CREATE DATABASE lab_scheduling;"
 ```
 
 ### Local Backend Development
 ```bash
 cd Backend
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# Windows (PowerShell)
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:application --reload --host 0.0.0.0 --port 8001
 ```
 
 ### Local Frontend Development
 ```bash
 cd Frontend
 npm install
-npm run dev
+npm run dev -- --host 0.0.0.0 --port 5174
+```
+
+### Local URLs
+- Frontend: `http://localhost:5174`
+- Backend API: `http://localhost:8001`
+- API Docs: `http://localhost:8001/docs`
+
+### Docker (Optional)
+```bash
+# Start all services
+docker compose up -d --build
+
+# View logs
+docker compose logs -f backend
+docker compose logs -f frontend
+
+# Restart backend after code changes
+docker compose restart backend
 ```
 
 ---
@@ -299,7 +320,7 @@ Maximize: sum(priority_score * x[(test, lab)] - movement_penalty * x[(test, lab)
 ### Sample API Calls
 ```bash
 # Create a patient
-curl -X POST http://localhost:8000/api/frontend/patients \
+curl -X POST http://localhost:8001/api/frontend/patients \
   -H "Content-Type: application/json" \
   -d '{
     "patient_name": "John Doe",
@@ -310,10 +331,10 @@ curl -X POST http://localhost:8000/api/frontend/patients \
   }'
 
 # Get lobby status
-curl http://localhost:8000/api/lobby/next
+curl http://localhost:8001/api/lobby/next
 
 # Start a test
-curl -X POST http://localhost:8000/api/tests/1/start
+curl -X POST http://localhost:8001/api/tests/1/start
 ```
 
 ---

@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import { ServiceManagementData, TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
+import { HospitalCatalogEntry, LimsConfigData, ServiceManagementData, TestCatalogItem, TestPriorityFlag, WaitingCandidate } from '../types';
 
 export interface FrontendBootstrapResponse {
   visits: any[];
@@ -206,6 +206,60 @@ export const frontendApi = {
   },
   seedMockLabs: async () => {
     const response = await apiClient.post('/seed/labs', {});
+    return response.data;
+  },
+
+  // Hospital Catalog CRUD
+  getHospitalCatalog: async () => {
+    const response = await apiClient.get<HospitalCatalogEntry[]>('/hospital-catalog');
+    return response.data;
+  },
+  getGlobalCatalog: async () => {
+    const response = await apiClient.get<TestCatalogItem[]>('/hospital-catalog/global');
+    return response.data;
+  },
+  bulkImportCatalog: async (test_codes: string[]) => {
+    const response = await apiClient.post('/hospital-catalog/bulk-import', { test_codes });
+    return response.data;
+  },
+  importAllCatalog: async () => {
+    const response = await apiClient.post('/hospital-catalog/import-all');
+    return response.data;
+  },
+  updateCatalogEntry: async (test_code: string, payload: { duration_minutes?: number; is_active?: boolean }) => {
+    const response = await apiClient.patch(`/hospital-catalog/${test_code}`, payload);
+    return response.data;
+  },
+  deleteCatalogEntry: async (test_code: string) => {
+    const response = await apiClient.delete(`/hospital-catalog/${test_code}`);
+    return response.data;
+  },
+
+  // Dependency CRUD
+  getDependencies: async () => {
+    const response = await apiClient.get('/dependencies');
+    return response.data;
+  },
+  createDependency: async (payload: { test_code: string; depends_on_test_code: string; dependency_type?: string; is_strict?: boolean }) => {
+    const response = await apiClient.post('/dependencies', payload);
+    return response.data;
+  },
+  deleteDependency: async (depId: number) => {
+    const response = await apiClient.delete(`/dependencies/${depId}`);
+    return response.data;
+  },
+
+  // LIMS Config (SuperAdmin)
+  getLimsConfig: async (hospitalId: number) => {
+    const response = await apiClient.get<LimsConfigData>(`/super-admin/hospitals/${hospitalId}/lims-config`);
+    return response.data;
+  },
+  saveLimsConfig: async (hospitalId: number, payload: { callback_url: string | null; is_enabled: boolean }) => {
+    const response = await apiClient.post(`/super-admin/hospitals/${hospitalId}/lims-config`, payload);
+    return response.data;
+  },
+  regenerateLimsKey: async (hospitalId: number) => {
+    const response = await apiClient.post<{ api_key: string }>(`/super-admin/hospitals/${hospitalId}/lims-config/regenerate-key`);
     return response.data;
   },
 };

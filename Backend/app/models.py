@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, time
 from enum import Enum
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, Time, func
+from sqlalchemy import JSON, Boolean, Date, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, Time, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -30,6 +30,40 @@ class QueueEntryType(str, Enum):
     PENDING = 'PENDING'
 
 
+class UserRole(str, Enum):
+    SUPER_ADMIN = 'SuperAdmin'
+    ADMIN = 'Admin'
+    RECEPTIONIST = 'Receptionist'
+    LAB_SPECIALIST = 'LabSpecialist'
+
+
+class Hospital(Base):
+    __tablename__ = 'hospitals'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    users = relationship('User', back_populates='hospital')
+
+
+class User(Base):
+    __tablename__ = 'users'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    firebase_uid: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    role: Mapped[UserRole] = mapped_column(SqlEnum(UserRole), nullable=False)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    hospital = relationship('Hospital', back_populates='users')
+
+
 class Specialist(Base):
     __tablename__ = 'specialists'
 
@@ -39,6 +73,7 @@ class Specialist(Base):
     shift_start: Mapped[time] = mapped_column(Time, nullable=False)
     shift_end: Mapped[time] = mapped_column(Time, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -49,8 +84,9 @@ class LabGroup(Base):
     __tablename__ = 'lab_groups'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
     category: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -72,6 +108,7 @@ class Lab(Base):
     supported_test_codes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     specialist_id: Mapped[int | None] = mapped_column(ForeignKey('specialists.id', ondelete='SET NULL'), index=True)
     group_id: Mapped[int | None] = mapped_column(ForeignKey('lab_groups.id', ondelete='SET NULL'), index=True)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -93,6 +130,7 @@ class Visit(Base):
     phone: Mapped[str | None] = mapped_column(String(20))
     arrival_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     patient_snapshot: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -118,6 +156,9 @@ class TestItem(Base):
     caution_reason: Mapped[str | None] = mapped_column(Text)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    allocated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -139,6 +180,7 @@ class QueueEntry(Base):
     position: Mapped[int | None] = mapped_column(Integer)
     pending_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -152,6 +194,7 @@ class QueueCursor(Base):
 
     lab_id: Mapped[int] = mapped_column(ForeignKey('labs.id', ondelete='CASCADE'), primary_key=True)
     consecutive_pending_accepts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
@@ -163,6 +206,7 @@ class AssignmentHistory(Base):
     from_lab_id: Mapped[int | None] = mapped_column(ForeignKey('labs.id', ondelete='SET NULL'))
     to_lab_id: Mapped[int | None] = mapped_column(ForeignKey('labs.id', ondelete='SET NULL'))
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     test_item = relationship('TestItem', back_populates='assignment_history')
@@ -181,6 +225,7 @@ class CompletedTestSnapshot(Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     lab_id: Mapped[int | None] = mapped_column(ForeignKey('labs.id', ondelete='SET NULL'), index=True)
     lab_name: Mapped[str | None] = mapped_column(String(120))
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     test_item = relationship('TestItem', back_populates='completed_snapshots')
@@ -190,8 +235,52 @@ class ExplicitDependencies(Base):
     __tablename__ = 'explicit_dependencies'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    test_code: Mapped[str] = mapped_column(String(120), nullable=False, index=True)  # e.g., 'TMT', 'ECG'
+    test_code: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     depends_on_test_code: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
-    dependency_type: Mapped[str] = mapped_column(String(50), nullable=False, default='must_complete_before')  # 'must_complete_before', 'recommended_after'
-    is_strict: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)  # If True, blocks scheduling; if False, warning only
+    dependency_type: Mapped[str] = mapped_column(String(50), nullable=False, default='must_complete_before')
+    is_strict: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    hospital_id: Mapped[int | None] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class HospitalTestCatalog(Base):
+    __tablename__ = 'hospital_test_catalog'
+    __table_args__ = (
+        UniqueConstraint('hospital_id', 'test_code', name='uq_hospital_test_code'),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), nullable=False, index=True)
+    test_code: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    test_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(String(255), nullable=False)
+    duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    condition_category: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class LimsConfig(Base):
+    __tablename__ = 'lims_config'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), unique=True, nullable=False, index=True)
+    api_key_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    callback_url: Mapped[str | None] = mapped_column(String(500))
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class LimsWebhookLog(Base):
+    __tablename__ = 'lims_webhook_log'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hospital_id: Mapped[int] = mapped_column(ForeignKey('hospitals.id', ondelete='CASCADE'), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    response_body: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

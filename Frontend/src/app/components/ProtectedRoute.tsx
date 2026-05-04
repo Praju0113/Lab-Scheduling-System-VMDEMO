@@ -1,21 +1,26 @@
 import { Navigate, Outlet } from 'react-router';
-import { useAuthStore } from '../store/useAuthStore';
+import { useAuthStore, type AppRole } from '../store/useAuthStore';
 
 interface ProtectedRouteProps {
-  allowedRoles?: ('Admin' | 'Receptionist')[];
+  allowedRoles?: AppRole[];
 }
 
 export function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
-  const { role, token } = useAuthStore();
+  const { role, token, loading } = useAuthStore();
 
-  // If there's no token, redirect to login
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-8 h-8 border-4 border-[#5D2582] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   if (!token) {
     return <Navigate to="/" replace />;
   }
 
-  // If user role is not allowed, redirect to unauthorized or home
   if (allowedRoles && role && !allowedRoles.includes(role)) {
-    // We could make an Unauthorized component later, or redirect back to role selection
     return <Navigate to="/" replace />;
   }
 

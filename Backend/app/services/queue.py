@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.models import CompletedTestSnapshot, QueueEntry, QueueEntryType, QueueStatus, TestItem, TestStatus, Visit
 from app.services.bootstrap import queue_snapshot
+from app.services.lims_webhook import fire_test_completed_webhook
 from app.services.patient_ids import patient_id_date
 
 
@@ -42,6 +43,7 @@ class QueueService:
         _, test = self._find_test(next_item.test_item_id)
         test.status = TestStatus.IN_PROGRESS
         test.queue_status = QueueStatus.CURRENT
+        test.started_at = datetime.now(timezone.utc)
 
         self.session.flush()
         return self.snapshot(lab_id)
@@ -91,6 +93,7 @@ class QueueService:
         _, test = self._find_test(selected.test_item_id)
         test.status = TestStatus.IN_PROGRESS
         test.queue_status = QueueStatus.CURRENT
+        test.started_at = datetime.now(timezone.utc)
         self.session.flush()
         return self.snapshot(lab_id)
 
@@ -115,6 +118,6 @@ class QueueService:
             lab_name=current.lab.name if current.lab else None,
         ))
         self.session.delete(current)
-        # OR solver automatically handles dependencies on next run
         self.session.flush()
+        fire_test_completed_webhook(test.hospital_id, visit, test)
         return self.snapshot(lab_id)
