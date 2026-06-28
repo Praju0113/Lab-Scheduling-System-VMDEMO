@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +11,10 @@ from app.config import settings
 from app.db import Base, SessionLocal, engine, get_db
 from app.models import ExplicitDependencies, Hospital, HospitalTestCatalog, Lab, LabGroup, LimsConfig, LimsWebhookLog, QueueEntry, QueueStatus, Specialist, TestItem, TestStatus, User, UserRole, Visit
 from app.realtime import emit_nowait, mount
-from app.schemas import AcceptPendingPayload, CreateHospitalPayload, CreateUserPayload, DeltaResponse, ExplicitDependencyPayload, FrontendPatientPayload, HospitalTestCatalogBulkImport, HospitalTestCatalogUpdate, LabGroupPayload, LabPayload, LimsConfigPayload, LoginPayload, SpecialistPayload, VisitListResponse, VisitPayload
+from app.schemas import AcceptPendingPayload, CreateHospitalPayload, CreateUserPayload, DeltaResponse, ExplicitDependencyPayload, FrontendPatientPayload, HospitalTestCatalogBulkImport, HospitalTestCatalogUpdate, LabGroupPayload, LabPayload, LimsConfigPayload, LoginPayload, SpecialistPayload, UpdateHospitalPayload, UpdateUserPayload, VisitListResponse, VisitPayload
 from app.seed import reset_database, seed_database
 from app.catalog import test_catalog_map
-from app.auth import _init_firebase, create_firebase_user, generate_api_key, get_current_user, get_lims_hospital, require_role, verify_firebase_token
+from app.auth import _init_firebase, create_firebase_user, generate_api_key, get_current_user, get_lims_hospital, require_role, update_firebase_user, verify_firebase_token
 from firebase_admin import auth as firebase_auth
 from app.services.bootstrap import admin_dashboard_payload, bootstrap_payload, delta_payload, frontend_lab, frontend_lab_group, frontend_service_management, frontend_specialist, frontend_test_catalog, frontend_visit, hospital_catalog_map, paginated_visits, waiting_candidates_payload
 from app.services.patient_ids import build_patient_id, extract_sequence, patient_id_date
@@ -36,9 +36,11 @@ def _ensure_schema() -> None:
         for tbl in ['specialists', 'lab_groups', 'labs', 'visits', 'test_items',
                      'queue_entries', 'queue_cursors', 'assignment_history', 'completed_test_snapshots']:
             connection.execute(text(f"ALTER TABLE {tbl} ADD COLUMN IF NOT EXISTS hospital_id INTEGER REFERENCES hospitals(id) ON DELETE CASCADE"))
+        connection.execute(text("ALTER TABLE specialists ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS allocated_at TIMESTAMP WITH TIME ZONE"))
         connection.execute(text("ALTER TABLE test_items ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE"))
         connection.execute(text("ALTER TABLE explicit_dependencies ADD COLUMN IF NOT EXISTS hospital_id INTEGER REFERENCES hospitals(id) ON DELETE CASCADE"))
+        connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_specialists_user_id ON specialists(user_id)"))
 
 
 def _seed_default_hospital_and_users() -> None:
@@ -106,6 +108,330 @@ def _next_public_id(db: Session, arrival_time: datetime) -> str:
     sequences = [seq for public_id in existing_ids if (seq := extract_sequence(public_id, visit_date)) is not None]
     sequence = (max(sequences) + 1) if sequences else 0
     return build_patient_id(visit_date, sequence)
+
+
+ROLE_CREATION_RULES: dict[UserRole, set[UserRole]] = {
+    UserRole.SUPER_ADMIN: {
+        UserRole.SUPER_ADMIN,
+        UserRole.ADMIN,
+        UserRole.RECEPTIONIST,
+        UserRole.LAB_SPECIALIST,
+    },
+    UserRole.ADMIN: {
+        UserRole.ADMIN,
+        UserRole.RECEPTIONIST,
+        UserRole.LAB_SPECIALIST,
+    },
+    UserRole.RECEPTIONIST: {
+        UserRole.LAB_SPECIALIST,
+    },
+}
+
+
+def _parse_optional_shift(value: str | None) -> time | None:
+    if not value:
+        return None
+    return datetime.strptime(value[:5], '%H:%M').time()
+
+
+def _resolve_target_hospital_id(
+    creator: UserRole,
+    requested_hospital_id: int | None,
+    current_user: User | None,
+    db: Session,
+    target_role: UserRole,
+) -> int | None:
+    if creator == UserRole.SUPER_ADMIN:
+        if target_role == UserRole.SUPER_ADMIN:
+            return None
+        if requested_hospital_id is None:
+            raise HTTPException(status_code=400, detail='hospital_id required for non-SuperAdmin users')
+        hospital = db.get(Hospital, requested_hospital_id)
+        if not hospital:
+            raise HTTPException(status_code=404, detail='Hospital not found')
+        return hospital.id
+
+    if current_user is None or current_user.hospital_id is None:
+        raise HTTPException(status_code=400, detail='Current user is not assigned to a hospital')
+
+    if requested_hospital_id not in (None, current_user.hospital_id):
+        raise HTTPException(status_code=403, detail='Cannot create users for another hospital')
+
+    return current_user.hospital_id
+
+
+def _specialist_defaults(payload: CreateUserPayload, creator_role: UserRole) -> tuple[str, time, time]:
+    gender = payload.gender or 'Other'
+    shift_start = _parse_optional_shift(payload.shift_start)
+    shift_end = _parse_optional_shift(payload.shift_end)
+
+    if creator_role == UserRole.RECEPTIONIST:
+        if not payload.gender or shift_start is None or shift_end is None:
+            raise HTTPException(
+                status_code=400,
+                detail='gender, shift_start, and shift_end are required when Receptionist creates a LabSpecialist',
+            )
+
+    return (
+        gender,
+        shift_start or time(hour=8, minute=0),
+        shift_end or time(hour=16, minute=0),
+    )
+
+
+def _create_user_with_permissions(
+    payload: CreateUserPayload,
+    *,
+    creator_role: UserRole,
+    db: Session,
+    current_user: User | None = None,
+) -> dict:
+    try:
+        target_role = UserRole(payload.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail='Invalid role') from exc
+
+    allowed_roles = ROLE_CREATION_RULES.get(creator_role, set())
+    if target_role not in allowed_roles:
+        raise HTTPException(status_code=403, detail='Insufficient permissions to create this role')
+
+    hospital_id = _resolve_target_hospital_id(creator_role, payload.hospital_id, current_user, db, target_role)
+
+    if db.scalar(select(User).where(User.email == payload.email)):
+        raise HTTPException(status_code=400, detail='Email already exists')
+
+    try:
+        firebase_uid = create_firebase_user(payload.email, payload.password, payload.display_name)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f'Firebase user creation failed: {exc}')
+
+    db_user = User(
+        firebase_uid=firebase_uid,
+        email=payload.email,
+        display_name=payload.display_name,
+        role=target_role,
+        hospital_id=hospital_id,
+        is_active=True,
+    )
+    db.add(db_user)
+    db.flush()
+
+    specialist = None
+    if target_role == UserRole.LAB_SPECIALIST:
+        gender, shift_start, shift_end = _specialist_defaults(payload, creator_role)
+        specialist = Specialist(
+            user_id=db_user.id,
+            name=payload.display_name,
+            gender=gender,
+            shift_start=shift_start,
+            shift_end=shift_end,
+            is_active=True,
+            hospital_id=hospital_id,
+        )
+        db.add(specialist)
+        db.flush()
+
+    db.commit()
+
+    return {
+        'id': db_user.id,
+        'email': db_user.email,
+        'display_name': db_user.display_name,
+        'role': db_user.role.value,
+        'hospital_id': db_user.hospital_id,
+        'firebase_uid': firebase_uid,
+        'specialist_id': specialist.id if specialist else None,
+        'specialist': frontend_specialist(specialist) if specialist else None,
+    }
+
+
+def _hospital_users_payload(db: Session, hospital_id: int) -> list[dict]:
+    users = db.scalars(
+        select(User)
+        .where(User.hospital_id == hospital_id)
+        .order_by(User.id.asc())
+    ).all()
+    return [
+        {
+            'id': u.id,
+            'email': u.email,
+            'display_name': u.display_name,
+            'role': u.role.value,
+            'hospital_id': u.hospital_id,
+            'is_active': u.is_active,
+            'hospital_name': db.get(Hospital, u.hospital_id).name if u.hospital_id else None,
+        }
+        for u in users
+    ]
+
+
+def _hospital_payload(hospital: Hospital) -> dict:
+    return {
+        'id': hospital.id,
+        'name': hospital.name,
+        'code': hospital.code,
+        'is_active': hospital.is_active,
+    }
+
+
+def _update_super_admin_hospital(hospital_id: int, payload: UpdateHospitalPayload, db: Session) -> dict:
+    hospital = db.get(Hospital, hospital_id)
+    if not hospital:
+        raise HTTPException(status_code=404, detail='Hospital not found')
+
+    existing = db.scalar(select(Hospital).where(Hospital.code == payload.code, Hospital.id != hospital_id))
+    if existing:
+        raise HTTPException(status_code=400, detail='Hospital code already exists')
+
+    hospital.name = payload.name
+    hospital.code = payload.code
+    hospital.is_active = payload.is_active
+    db.commit()
+    return _hospital_payload(hospital)
+
+
+def _set_hospital_active_state(hospital_id: int, is_active: bool, db: Session) -> dict:
+    hospital = db.get(Hospital, hospital_id)
+    if not hospital:
+        raise HTTPException(status_code=404, detail='Hospital not found')
+    hospital.is_active = is_active
+    db.commit()
+    return _hospital_payload(hospital)
+
+
+def _delete_super_admin_hospital(hospital_id: int, db: Session) -> dict:
+    hospital = db.get(Hospital, hospital_id)
+    if not hospital:
+        raise HTTPException(status_code=404, detail='Hospital not found')
+    hospital_name = hospital.name
+    db.delete(hospital)
+    db.commit()
+    return {'message': f'Hospital {hospital_name} deleted'}
+
+
+def _update_super_admin_user(user_id: int, payload: UpdateUserPayload, db: Session) -> dict:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail='User not found')
+
+    try:
+        target_role = UserRole(payload.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail='Invalid role') from exc
+
+    if payload.hospital_id is not None:
+        hospital = db.get(Hospital, payload.hospital_id)
+        if not hospital:
+            raise HTTPException(status_code=404, detail='Hospital not found')
+
+    if target_role != UserRole.SUPER_ADMIN and payload.hospital_id is None:
+        raise HTTPException(status_code=400, detail='hospital_id required for non-SuperAdmin users')
+
+    if target_role == UserRole.SUPER_ADMIN:
+        payload_hospital_id = None
+    else:
+        payload_hospital_id = payload.hospital_id
+
+    email_conflict = db.scalar(select(User).where(User.email == payload.email, User.id != user_id))
+    if email_conflict:
+        raise HTTPException(status_code=400, detail='Email already exists')
+
+    update_firebase_user(
+        db_user.firebase_uid,
+        email=payload.email,
+        password=payload.password or None,
+        display_name=payload.display_name,
+    )
+
+    previous_role = db_user.role
+    db_user.email = payload.email
+    db_user.display_name = payload.display_name
+    db_user.role = target_role
+    db_user.hospital_id = payload_hospital_id
+
+    specialist = db.scalar(select(Specialist).where(Specialist.user_id == db_user.id))
+
+    if target_role == UserRole.LAB_SPECIALIST:
+        gender = payload.gender or specialist.gender if specialist else (payload.gender or 'Other')
+        shift_start = _parse_optional_shift(payload.shift_start) or (specialist.shift_start if specialist else time(hour=8, minute=0))
+        shift_end = _parse_optional_shift(payload.shift_end) or (specialist.shift_end if specialist else time(hour=16, minute=0))
+
+        if specialist is None:
+            specialist = Specialist(
+                user_id=db_user.id,
+                name=payload.display_name,
+                gender=gender,
+                shift_start=shift_start,
+                shift_end=shift_end,
+                is_active=db_user.is_active,
+                hospital_id=payload_hospital_id,
+            )
+            db.add(specialist)
+        else:
+            specialist.name = payload.display_name
+            specialist.gender = gender
+            specialist.shift_start = shift_start
+            specialist.shift_end = shift_end
+            specialist.is_active = db_user.is_active
+            specialist.hospital_id = payload_hospital_id
+    elif specialist is not None and previous_role == UserRole.LAB_SPECIALIST:
+        db.delete(specialist)
+        specialist = None
+
+    db.commit()
+
+    return {
+        'id': db_user.id,
+        'email': db_user.email,
+        'display_name': db_user.display_name,
+        'role': db_user.role.value,
+        'hospital_id': db_user.hospital_id,
+        'is_active': db_user.is_active,
+        'specialist_id': specialist.id if specialist else None,
+    }
+
+
+def _set_super_admin_user_active_state(user_id: int, is_active: bool, db: Session) -> dict:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail='User not found')
+
+    db_user.is_active = is_active
+    specialist = db.scalar(select(Specialist).where(Specialist.user_id == db_user.id))
+    if specialist:
+        specialist.is_active = is_active
+    db.commit()
+    return {
+        'id': db_user.id,
+        'email': db_user.email,
+        'display_name': db_user.display_name,
+        'role': db_user.role.value,
+        'hospital_id': db_user.hospital_id,
+        'is_active': db_user.is_active,
+    }
+
+
+def _delete_super_admin_user(user_id: int, db: Session) -> dict:
+    db_user = db.get(User, user_id)
+    if not db_user:
+        raise HTTPException(status_code=404, detail='User not found')
+
+    firebase_uid = db_user.firebase_uid
+    specialist = db.scalar(select(Specialist).where(Specialist.user_id == db_user.id))
+    display_name = db_user.display_name
+
+    if specialist:
+        db.delete(specialist)
+    db.delete(db_user)
+    db.commit()
+
+    try:
+        _init_firebase()
+        firebase_auth.delete_user(firebase_uid)
+    except Exception:
+        pass
+
+    return {'message': f'User {display_name} deleted'}
 
 
 def _requested_frontend_tests(payload: FrontendPatientPayload) -> list[dict[str, str]]:
@@ -220,22 +546,22 @@ def bootstrap_users(db: Session = Depends(get_db)):
 
     created = []
     for email, password, display_name, role, h_id in seed_users:
-        try:
-            fb_uid = create_firebase_user(email, password, display_name)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f'Firebase error for {email}: {exc}')
-        user = User(
-            firebase_uid=fb_uid,
-            email=email,
-            display_name=display_name,
-            role=role,
-            hospital_id=h_id,
-            is_active=True,
+        result = _create_user_with_permissions(
+            CreateUserPayload(
+                email=email,
+                password=password,
+                display_name=display_name,
+                role=role.value,
+                hospital_id=h_id,
+                gender='Other' if role == UserRole.LAB_SPECIALIST else None,
+                shift_start='08:00' if role == UserRole.LAB_SPECIALIST else None,
+                shift_end='16:00' if role == UserRole.LAB_SPECIALIST else None,
+            ),
+            creator_role=UserRole.SUPER_ADMIN,
+            db=db,
         )
-        db.add(user)
-        created.append({'email': email, 'password': password, 'role': role.value})
+        created.append({'email': email, 'password': password, 'role': role.value, 'id': result['id']})
 
-    db.commit()
     return {'created': created}
 
 
@@ -258,6 +584,8 @@ def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=403, detail='User not registered in system')
     hospital = db.get(Hospital, user.hospital_id) if user.hospital_id else None
+    if user.role != UserRole.SUPER_ADMIN and hospital and not hospital.is_active:
+        raise HTTPException(status_code=403, detail='Hospital is disabled')
     return {
         'user': {
             'id': user.id,
@@ -290,7 +618,7 @@ def auth_me(user: User = Depends(get_current_user), db: Session = Depends(get_db
 @app.get('/api/super-admin/hospitals')
 def list_hospitals(user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
     hospitals = db.scalars(select(Hospital).order_by(Hospital.id.asc())).all()
-    return [{'id': h.id, 'name': h.name, 'code': h.code, 'is_active': h.is_active} for h in hospitals]
+    return [_hospital_payload(h) for h in hospitals]
 
 
 @app.post('/api/super-admin/hospitals')
@@ -300,7 +628,27 @@ def create_hospital(payload: CreateHospitalPayload, user: User = Depends(require
     hospital = Hospital(name=payload.name, code=payload.code, is_active=True)
     db.add(hospital)
     db.commit()
-    return {'id': hospital.id, 'name': hospital.name, 'code': hospital.code, 'is_active': hospital.is_active}
+    return _hospital_payload(hospital)
+
+
+@app.patch('/api/super-admin/hospitals/{hospital_id}')
+def update_hospital(hospital_id: int, payload: UpdateHospitalPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _update_super_admin_hospital(hospital_id, payload, db)
+
+
+@app.delete('/api/super-admin/hospitals/{hospital_id}')
+def delete_hospital(hospital_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _delete_super_admin_hospital(hospital_id, db)
+
+
+@app.post('/api/super-admin/hospitals/{hospital_id}/disable')
+def disable_hospital(hospital_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _set_hospital_active_state(hospital_id, False, db)
+
+
+@app.post('/api/super-admin/hospitals/{hospital_id}/enable')
+def enable_hospital(hospital_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _set_hospital_active_state(hospital_id, True, db)
 
 
 @app.get('/api/super-admin/users')
@@ -318,27 +666,48 @@ def list_users(user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Ses
 
 @app.post('/api/super-admin/users')
 async def create_user(payload: CreateUserPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
-    role = UserRole(payload.role)
-    if role != UserRole.SUPER_ADMIN and not payload.hospital_id:
-        raise HTTPException(status_code=400, detail='hospital_id required for non-SuperAdmin users')
-    if payload.hospital_id:
-        hospital = db.get(Hospital, payload.hospital_id)
-        if not hospital:
-            raise HTTPException(status_code=404, detail='Hospital not found')
-    try:
-        firebase_uid = create_firebase_user(payload.email, payload.password, payload.display_name)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'Firebase user creation failed: {e}')
-    db_user = User(
-        firebase_uid=firebase_uid, email=payload.email, display_name=payload.display_name,
-        role=role, hospital_id=payload.hospital_id, is_active=True,
-    )
-    db.add(db_user)
-    db.commit()
-    return {
-        'id': db_user.id, 'email': db_user.email, 'display_name': db_user.display_name,
-        'role': db_user.role.value, 'hospital_id': db_user.hospital_id, 'firebase_uid': firebase_uid,
-    }
+    return _create_user_with_permissions(payload, creator_role=UserRole.SUPER_ADMIN, db=db, current_user=user)
+
+
+@app.patch('/api/super-admin/users/{user_id}')
+async def update_super_admin_user(user_id: int, payload: UpdateUserPayload, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _update_super_admin_user(user_id, payload, db)
+
+
+@app.delete('/api/super-admin/users/{user_id}')
+async def delete_super_admin_user(user_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _delete_super_admin_user(user_id, db)
+
+
+@app.post('/api/super-admin/users/{user_id}/disable')
+async def disable_super_admin_user(user_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _set_super_admin_user_active_state(user_id, False, db)
+
+
+@app.post('/api/super-admin/users/{user_id}/enable')
+async def enable_super_admin_user(user_id: int, user: User = Depends(require_role(UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    return _set_super_admin_user_active_state(user_id, True, db)
+
+
+@app.get('/api/admin/users')
+def list_admin_users(user: User = Depends(require_role(UserRole.ADMIN)), db: Session = Depends(get_db)):
+    return _hospital_users_payload(db, user.hospital_id)
+
+
+@app.post('/api/admin/users')
+async def create_admin_user(payload: CreateUserPayload, user: User = Depends(require_role(UserRole.ADMIN)), db: Session = Depends(get_db)):
+    return _create_user_with_permissions(payload, creator_role=UserRole.ADMIN, db=db, current_user=user)
+
+
+@app.post('/api/receptionist/lab-specialists')
+async def create_receptionist_lab_specialist(payload: CreateUserPayload, user: User = Depends(require_role(UserRole.RECEPTIONIST)), db: Session = Depends(get_db)):
+    result = _create_user_with_permissions(payload, creator_role=UserRole.RECEPTIONIST, db=db, current_user=user)
+    specialist_payload = result.get('specialist')
+    if specialist_payload:
+        emit_nowait('specialist.updated', specialist_payload)
+        emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db, hospital_id=user.hospital_id))
+        return specialist_payload
+    raise HTTPException(status_code=500, detail='LabSpecialist creation did not produce a specialist record')
 
 
 # ===== LIMS Config (SuperAdmin) =====
@@ -689,27 +1058,26 @@ def frontend_delta(since: datetime | None = None, user: User = Depends(get_curre
 
 
 @app.post('/api/specialists')
-async def create_specialist(payload: SpecialistPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    specialist = Specialist(name=payload.name, gender=payload.gender, shift_start=datetime.strptime(payload.shift_start[:5], '%H:%M').time(), shift_end=datetime.strptime(payload.shift_end[:5], '%H:%M').time(), is_active=payload.is_active, hospital_id=user.hospital_id)
-    db.add(specialist)
-    db.flush()
-    db.commit()
-    response = frontend_specialist(specialist)
-    emit_nowait('specialist.updated', response)
-    emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
-    return response
+async def create_specialist(payload: SpecialistPayload, user: User = Depends(require_role(UserRole.RECEPTIONIST, UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
+    raise HTTPException(status_code=403, detail='Create LabSpecialist users from the role-based user creation flow')
 
 
 @app.patch('/api/specialists/{specialist_id}')
-async def update_specialist(specialist_id: int, payload: SpecialistPayload, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def update_specialist(specialist_id: int, payload: SpecialistPayload, user: User = Depends(require_role(UserRole.RECEPTIONIST, UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
     specialist = db.get(Specialist, specialist_id)
     if specialist is None:
         raise HTTPException(status_code=404, detail='Specialist not found')
+    if specialist.hospital_id != user.hospital_id:
+        raise HTTPException(status_code=403, detail='Cannot edit another hospital\'s specialist')
     specialist.name = payload.name
     specialist.gender = payload.gender
     specialist.shift_start = datetime.strptime(payload.shift_start[:5], '%H:%M').time()
     specialist.shift_end = datetime.strptime(payload.shift_end[:5], '%H:%M').time()
     specialist.is_active = payload.is_active
+    if specialist.user_id:
+        linked_user = db.get(User, specialist.user_id)
+        if linked_user:
+            linked_user.display_name = payload.name
     db.commit()
     # Trigger OR optimization to re-assign based on new specialist availability
     or_scheduler = ORScheduler(db, hospital_id=user.hospital_id)
@@ -722,12 +1090,23 @@ async def update_specialist(specialist_id: int, payload: SpecialistPayload, user
 
 
 @app.delete('/api/specialists/{specialist_id}')
-async def delete_specialist(specialist_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def delete_specialist(specialist_id: int, user: User = Depends(require_role(UserRole.RECEPTIONIST, UserRole.ADMIN, UserRole.SUPER_ADMIN)), db: Session = Depends(get_db)):
     specialist = db.get(Specialist, specialist_id)
     if specialist is None:
         raise HTTPException(status_code=404, detail='Specialist not found')
+    if specialist.hospital_id != user.hospital_id:
+        raise HTTPException(status_code=403, detail='Cannot delete another hospital\'s specialist')
+    linked_user = db.get(User, specialist.user_id) if specialist.user_id else None
     db.delete(specialist)
+    if linked_user:
+        db.delete(linked_user)
     db.commit()
+    if linked_user:
+        try:
+            _init_firebase()
+            firebase_auth.delete_user(linked_user.firebase_uid)
+        except Exception:
+            pass
     emit_nowait('specialist.updated', {'id': f's{specialist_id}', 'deleted': True})
     emit_nowait('dashboard.metrics.updated', admin_dashboard_payload(db))
     return {'message': 'Specialist deleted'}

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import LimsConfig, User, UserRole
+from app.models import Hospital, LimsConfig, User, UserRole
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -127,6 +127,10 @@ def get_current_user(
     user = db.scalar(select(User).where(User.firebase_uid == uid, User.is_active == True))
     if not user:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='User not registered in system')
+    if user.role != UserRole.SUPER_ADMIN and user.hospital_id:
+        hospital = db.get(Hospital, user.hospital_id)
+        if hospital and not hospital.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Hospital is disabled')
 
     return user
 
@@ -143,6 +147,25 @@ def create_firebase_user(email: str, password: str, display_name: str) -> str:
     _init_firebase()
     fb_user = firebase_auth.create_user(email=email, password=password, display_name=display_name)
     return fb_user.uid
+
+
+def update_firebase_user(
+    uid: str,
+    *,
+    email: str | None = None,
+    password: str | None = None,
+    display_name: str | None = None,
+) -> None:
+    _init_firebase()
+    kwargs: dict[str, str] = {}
+    if email is not None:
+        kwargs['email'] = email
+    if password:
+        kwargs['password'] = password
+    if display_name is not None:
+        kwargs['display_name'] = display_name
+    if kwargs:
+        firebase_auth.update_user(uid, **kwargs)
 
 
 def generate_api_key() -> tuple[str, str]:

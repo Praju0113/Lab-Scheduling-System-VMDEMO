@@ -42,6 +42,16 @@ type AdminDashboardPayload = {
   }>;
 };
 
+type UserRecord = {
+  id: number;
+  email: string;
+  display_name: string;
+  role: string;
+  hospital_id: number | null;
+  is_active: boolean;
+  hospital_name?: string | null;
+};
+
 const chartColors = ['#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1', '#0ea5e9', '#ef4444'];
 
 export default function AdminDashboard() {
@@ -49,6 +59,25 @@ export default function AdminDashboard() {
   const { visits, labs, initializeData } = useAppStore();
   const logout = useAuthStore((state) => state.logout);
   const [dashboardData, setDashboardData] = useState<AdminDashboardPayload | null>(null);
+  const [users, setUsers] = useState<UserRecord[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [formLoading, setFormLoading] = useState(false);
+  const [userEmail, setUserEmail] = useState('');
+  const [userPassword, setUserPassword] = useState('');
+  const [userDisplayName, setUserDisplayName] = useState('');
+  const [userRole, setUserRole] = useState<'Admin' | 'Receptionist' | 'LabSpecialist'>('Receptionist');
+  const [specialistGender, setSpecialistGender] = useState<'Male' | 'Female' | 'Other'>('Other');
+
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const data = await frontendApi.listAdminUsers();
+      setUsers(data);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
 
   useEffect(() => {
     void initializeData();
@@ -62,6 +91,35 @@ export default function AdminDashboard() {
 
     void loadDashboardData();
   }, [visits, labs]);
+
+  useEffect(() => {
+    void loadUsers();
+  }, []);
+
+  const handleCreateUser = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.createAdminUser({
+        email: userEmail,
+        password: userPassword,
+        display_name: userDisplayName,
+        role: userRole,
+        ...(userRole === 'LabSpecialist' ? { gender: specialistGender } : {}),
+      });
+      setUserEmail('');
+      setUserPassword('');
+      setUserDisplayName('');
+      setUserRole('Receptionist');
+      setSpecialistGender('Other');
+      await loadUsers();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to create user');
+    } finally {
+      setFormLoading(false);
+    }
+  };
 
   const completedTests = dashboardData?.summary.total_tests_completed ?? visits.filter((visit) => visit.status === 'Completed').length;
   const totalPatients = dashboardData?.summary.total_patients_attended ?? visits.length;
@@ -180,6 +238,138 @@ export default function AdminDashboard() {
       </header>
 
       <div className="px-8 py-6">
+        <div className="grid grid-cols-[1.2fr,1fr] gap-6 mb-6">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <h3 className="text-xl mb-4 text-gray-900">Create Hospital User</h3>
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              {formError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">
+                  {formError}
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">Display Name</label>
+                  <input
+                    required
+                    value={userDisplayName}
+                    onChange={(e) => setUserDisplayName(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">Role</label>
+                  <select
+                    value={userRole}
+                    onChange={(e) => setUserRole(e.target.value as 'Admin' | 'Receptionist' | 'LabSpecialist')}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                  >
+                    <option value="Receptionist">Receptionist</option>
+                    <option value="LabSpecialist">Lab Specialist</option>
+                    <option value="Admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">Email</label>
+                  <input
+                    type="email"
+                    required
+                    value={userEmail}
+                    onChange={(e) => setUserEmail(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">Password</label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={userPassword}
+                    onChange={(e) => setUserPassword(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                  />
+                </div>
+                {userRole === 'LabSpecialist' && (
+                  <div>
+                    <label className="block text-sm text-gray-600 mb-1">Gender</label>
+                    <select
+                      value={specialistGender}
+                      onChange={(e) => setSpecialistGender(e.target.value as 'Male' | 'Female' | 'Other')}
+                      className="w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                    >
+                      <option value="Other">Other</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-gray-500">
+                  Lab Specialist shift times are optional in Admin creation and default on the backend.
+                </p>
+                <button
+                  type="submit"
+                  disabled={formLoading}
+                  className="rounded-lg bg-[#5D2582] px-4 py-2 text-white hover:bg-[#4a1d68] disabled:opacity-50"
+                >
+                  {formLoading ? 'Creating...' : 'Create User'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-xl text-gray-900">Hospital Users</h3>
+              <button
+                onClick={() => void loadUsers()}
+                className="rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                Refresh
+              </button>
+            </div>
+            <div className="max-h-[260px] overflow-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-200">
+                    <th className="py-2 text-left text-sm text-gray-600">Name</th>
+                    <th className="py-2 text-left text-sm text-gray-600">Role</th>
+                    <th className="py-2 text-left text-sm text-gray-600">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((entry) => (
+                    <tr key={entry.id} className="border-b border-gray-100 last:border-0">
+                      <td className="py-2 text-sm text-gray-900">
+                        <div>{entry.display_name}</div>
+                        <div className="text-xs text-gray-500">{entry.email}</div>
+                      </td>
+                      <td className="py-2 text-sm text-gray-600">{entry.role}</td>
+                      <td className="py-2 text-sm text-gray-600">{entry.is_active ? 'Active' : 'Inactive'}</td>
+                    </tr>
+                  ))}
+                  {!users.length && !usersLoading && (
+                    <tr>
+                      <td colSpan={3} className="py-6 text-center text-sm text-gray-500">
+                        No hospital users found.
+                      </td>
+                    </tr>
+                  )}
+                  {usersLoading && (
+                    <tr>
+                      <td colSpan={3} className="py-6 text-center text-sm text-gray-500">
+                        Loading users...
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-4 gap-6 mb-6">
           <KPICard title="Total Tests" value={completedTests} icon={CheckCircle} color="text-green-600" bgColor="bg-green-50" />
           <KPICard title="Total Patients" value={totalPatients} icon={Users} color="text-blue-600" bgColor="bg-blue-50" />

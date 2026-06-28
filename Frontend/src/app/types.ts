@@ -92,6 +92,7 @@ export interface WaitingCandidate {
 
 export interface Specialist {
   id: string;
+  user_id?: number | null;
   name: string;
   gender: Gender;
   shift_start: string;

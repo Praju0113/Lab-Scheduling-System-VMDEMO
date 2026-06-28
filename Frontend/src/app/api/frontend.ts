@@ -23,6 +23,34 @@ const stripPrefixedId = (value?: string | null) => {
   return value.replace(/^[a-z]/i, '');
 };
 
+export interface CreateUserRequest {
+  email: string;
+  password: string;
+  display_name: string;
+  role: 'SuperAdmin' | 'Admin' | 'Receptionist' | 'LabSpecialist';
+  hospital_id?: number | null;
+  gender?: string;
+  shift_start?: string;
+  shift_end?: string;
+}
+
+export interface UpdateUserRequest {
+  email: string;
+  display_name: string;
+  role: 'SuperAdmin' | 'Admin' | 'Receptionist' | 'LabSpecialist';
+  hospital_id?: number | null;
+  password?: string;
+  gender?: string;
+  shift_start?: string;
+  shift_end?: string;
+}
+
+export interface UpdateHospitalRequest {
+  name: string;
+  code: string;
+  is_active: boolean;
+}
+
 export const frontendApi = {
   bootstrap: async () => {
     const response = await apiClient.get<FrontendBootstrapResponse>('/frontend/bootstrap');
@@ -72,16 +100,20 @@ export const frontendApi = {
   },
   createSpecialist: async (payload: {
     name: string;
+    email: string;
+    password: string;
     gender: string;
     shift_start: string;
     shift_end: string;
   }) => {
-    const response = await apiClient.post('/specialists', {
-      name: payload.name,
+    const response = await apiClient.post('/receptionist/lab-specialists', {
+      email: payload.email,
+      password: payload.password,
+      display_name: payload.name,
+      role: 'LabSpecialist',
       gender: payload.gender,
       shift_start: `${payload.shift_start}:00`,
       shift_end: `${payload.shift_end}:00`,
-      is_active: true,
     });
     return response.data;
   },
@@ -102,6 +134,50 @@ export const frontendApi = {
   },
   deleteSpecialist: async (specialistId: string) => {
     const response = await apiClient.delete(`/specialists/${stripPrefixedId(specialistId)}`);
+    return response.data;
+  },
+  listAdminUsers: async () => {
+    const response = await apiClient.get('/admin/users');
+    return response.data;
+  },
+  createAdminUser: async (payload: CreateUserRequest) => {
+    const response = await apiClient.post('/admin/users', payload);
+    return response.data;
+  },
+  createSuperAdminUser: async (payload: CreateUserRequest) => {
+    const response = await apiClient.post('/super-admin/users', payload);
+    return response.data;
+  },
+  updateSuperAdminUser: async (userId: number, payload: UpdateUserRequest) => {
+    const response = await apiClient.patch(`/super-admin/users/${userId}`, payload);
+    return response.data;
+  },
+  updateSuperAdminHospital: async (hospitalId: number, payload: UpdateHospitalRequest) => {
+    const response = await apiClient.patch(`/super-admin/hospitals/${hospitalId}`, payload);
+    return response.data;
+  },
+  deleteSuperAdminHospital: async (hospitalId: number) => {
+    const response = await apiClient.delete(`/super-admin/hospitals/${hospitalId}`);
+    return response.data;
+  },
+  disableSuperAdminHospital: async (hospitalId: number) => {
+    const response = await apiClient.post(`/super-admin/hospitals/${hospitalId}/disable`);
+    return response.data;
+  },
+  enableSuperAdminHospital: async (hospitalId: number) => {
+    const response = await apiClient.post(`/super-admin/hospitals/${hospitalId}/enable`);
+    return response.data;
+  },
+  deleteSuperAdminUser: async (userId: number) => {
+    const response = await apiClient.delete(`/super-admin/users/${userId}`);
+    return response.data;
+  },
+  disableSuperAdminUser: async (userId: number) => {
+    const response = await apiClient.post(`/super-admin/users/${userId}/disable`);
+    return response.data;
+  },
+  enableSuperAdminUser: async (userId: number) => {
+    const response = await apiClient.post(`/super-admin/users/${userId}/enable`);
     return response.data;
   },
   createLab: async (payload: {

@@ -53,7 +53,7 @@ interface AppState {
   createVisit: (payload: VisitPayload) => Promise<void>;
   saveVisit: (id: string | null, payload: VisitPayload) => Promise<void>;
   saveLabGroup: (payload: { name: string; category: string; lab_ids: string[] }) => Promise<void>;
-  saveSpecialist: (id: string | null, payload: Omit<Specialist, 'id'>) => Promise<void>;
+  saveSpecialist: (id: string | null, payload: Omit<Specialist, 'id'> & { email?: string; password?: string }) => Promise<void>;
   saveLab: (id: string | null, payload: Omit<Lab, 'id' | 'queue' | 'current_patient_id' | 'waiting_count'>) => Promise<void>;
   deleteSpecialist: (id: string) => Promise<void>;
   deleteLab: (id: string) => Promise<void>;
@@ -157,9 +157,15 @@ export const useAppStore = create<AppState>((set) => ({
   },
 
   saveSpecialist: async (id, payload) => {
-    const specialist = id ? await frontendApi.updateSpecialist(id, payload) : await frontendApi.createSpecialist(payload);
-    set((state) => ({ specialists: sortSpecialists(upsertById(state.specialists, specialist)) }));
-  },
+      const specialist = id
+        ? await frontendApi.updateSpecialist(id, payload)
+        : await frontendApi.createSpecialist({
+            ...payload,
+            email: payload.email ?? '',
+            password: payload.password ?? '',
+          });
+      set((state) => ({ specialists: sortSpecialists(upsertById(state.specialists, specialist)) }));
+    },
 
   saveLab: async (id, payload) => {
     const lab = id ? await frontendApi.updateLab(id, payload) : await frontendApi.createLab(payload);

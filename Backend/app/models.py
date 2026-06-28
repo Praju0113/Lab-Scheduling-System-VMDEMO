@@ -69,6 +69,7 @@ class Specialist(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), unique=True, index=True)
     gender: Mapped[str] = mapped_column(String(20), nullable=False)
     shift_start: Mapped[time] = mapped_column(Time, nullable=False)
     shift_end: Mapped[time] = mapped_column(Time, nullable=False)

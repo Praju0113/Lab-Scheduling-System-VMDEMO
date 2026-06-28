@@ -45,6 +45,8 @@ Frontend/npm-debug.log*
 Frontend/yarn-debug.log*
 Frontend/yarn-error.log*
 Frontend/pnpm-debug.log*
+Frontend/src/app/firebase.ts
+
 
 # OS files
 .DS_Store

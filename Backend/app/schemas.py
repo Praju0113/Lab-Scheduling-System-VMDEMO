@@ -90,12 +90,32 @@ class CreateHospitalPayload(BaseModel):
     code: str
 
 
+class UpdateHospitalPayload(BaseModel):
+    name: str
+    code: str
+    is_active: bool
+
+
 class CreateUserPayload(BaseModel):
     email: str
     password: str
     display_name: str
     role: str
     hospital_id: int | None = None
+    gender: str | None = None
+    shift_start: str | None = None
+    shift_end: str | None = None
+
+
+class UpdateUserPayload(BaseModel):
+    email: str
+    display_name: str
+    role: str
+    hospital_id: int | None = None
+    password: str | None = None
+    gender: str | None = None
+    shift_start: str | None = None
+    shift_end: str | None = None
 
 
 class HospitalTestCatalogEntry(BaseModel):

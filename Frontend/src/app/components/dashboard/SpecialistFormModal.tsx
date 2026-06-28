@@ -7,6 +7,8 @@ import { Specialist } from '../../types';
 
 const specialistSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 chars length'),
+  email: z.string().email('Valid email is required').optional(),
+  password: z.string().min(6, 'Password must be at least 6 characters').optional(),
   gender: z.enum(['Male', 'Female', 'Other']),
   shift_start: z.string().min(1, 'Shift Start is required'),
   shift_end: z.string().min(1, 'Shift End is required'),
@@ -29,6 +31,7 @@ export function SpecialistFormModal({
     register,
     handleSubmit,
     reset,
+    setError,
     formState: { errors },
   } = useForm<SpecialistFormData>({
     resolver: zodResolver(specialistSchema),
@@ -39,6 +42,8 @@ export function SpecialistFormModal({
     if (editingSpecialist) {
       reset({
         name: editingSpecialist.name,
+        email: '',
+        password: '',
         gender: editingSpecialist.gender as any,
         shift_start: editingSpecialist.shift_start,
         shift_end: editingSpecialist.shift_end,
@@ -47,6 +52,8 @@ export function SpecialistFormModal({
     }
     reset({
       name: '',
+      email: '',
+      password: '',
       gender: 'Male',
       shift_start: '08:00',
       shift_end: '16:00',
@@ -55,9 +62,23 @@ export function SpecialistFormModal({
 
   if (!isOpen) return null;
 
+  const handleFormSubmit = (data: SpecialistFormData) => {
+    if (!editingSpecialist) {
+      if (!data.email) {
+        setError('email', { type: 'manual', message: 'Email is required' });
+        return;
+      }
+      if (!data.password) {
+        setError('password', { type: 'manual', message: 'Password is required' });
+        return;
+      }
+    }
+    void onSave(data);
+  };
+
   return (
-    <Modal onClose={onClose} title={editingSpecialist ? 'Edit Specialist' : 'Add Specialist'}>
-      <form onSubmit={handleSubmit(onSave)} className="space-y-4">
+    <Modal onClose={onClose} title={editingSpecialist ? 'Edit Specialist' : 'Add Specialist'} widthClass="max-w-lg">
+      <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-4">
         <div>
           <label className="block text-sm text-gray-600 mb-1">Name</label>
           <input
@@ -68,6 +89,30 @@ export function SpecialistFormModal({
           />
           {errors.name && <p className="text-red-500 text-xs mt-1">{errors.name.message}</p>}
         </div>
+        {!editingSpecialist && (
+          <>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Email</label>
+              <input
+                {...register('email')}
+                type="email"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                placeholder="labspecialist@hospital.com"
+              />
+              {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
+            </div>
+            <div>
+              <label className="block text-sm text-gray-600 mb-1">Password</label>
+              <input
+                {...register('password')}
+                type="password"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#5D2582]"
+                placeholder="Minimum 6 characters"
+              />
+              {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
+            </div>
+          </>
+        )}
         <div>
           <label className="block text-sm text-gray-600 mb-1">Gender</label>
           <select

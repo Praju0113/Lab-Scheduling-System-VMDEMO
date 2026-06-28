@@ -962,6 +962,8 @@ export default function ReceptionistDashboard() {
         onSave={(data) => {
           void saveSpecialist(editingSpecialist?.id ?? null, {
             name: data.name,
+            email: data.email,
+            password: data.password,
             gender: data.gender as Gender,
             shift_start: data.shift_start,
             shift_end: data.shift_end,

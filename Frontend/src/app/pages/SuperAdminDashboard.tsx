@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { Building2, Users, Plus, LogOut, RefreshCw, Link2, Key, Copy, Check } from 'lucide-react';
+import { Building2, Users, Plus, LogOut, RefreshCw, Link2, Key, Copy, Check, Eye, EyeOff, Edit, Trash2, Ban, RotateCcw } from 'lucide-react';
 import logo from '../../assets/Nueberg_Logo.png';
 import { useAuthStore } from '../store/useAuthStore';
 import { apiClient } from '../api/client';
 import { frontendApi } from '../api/frontend';
 import type { LimsConfigData } from '../types';
+import { Modal } from '../components/dashboard/Modal';
 
 interface Hospital {
   id: number;
@@ -44,13 +45,31 @@ export default function SuperAdminDashboard() {
   const [showHospitalForm, setShowHospitalForm] = useState(false);
   const [hospitalName, setHospitalName] = useState('');
   const [hospitalCode, setHospitalCode] = useState('');
+  const [showEditHospitalModal, setShowEditHospitalModal] = useState(false);
+  const [editingHospital, setEditingHospital] = useState<Hospital | null>(null);
+  const [editHospitalName, setEditHospitalName] = useState('');
+  const [editHospitalCode, setEditHospitalCode] = useState('');
+  const [editHospitalIsActive, setEditHospitalIsActive] = useState(true);
 
   const [showUserForm, setShowUserForm] = useState(false);
   const [userEmail, setUserEmail] = useState('');
   const [userPassword, setUserPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [userDisplayName, setUserDisplayName] = useState('');
-  const [userRole, setUserRole] = useState('Receptionist');
+  const [userRole, setUserRole] = useState<'Receptionist' | 'LabSpecialist' | 'Admin' | 'SuperAdmin'>('Receptionist');
   const [userHospitalId, setUserHospitalId] = useState<number | ''>('');
+  const [specialistGender, setSpecialistGender] = useState('Other');
+  const [showEditUserModal, setShowEditUserModal] = useState(false);
+  const [editingUser, setEditingUser] = useState<UserRecord | null>(null);
+  const [editUserEmail, setEditUserEmail] = useState('');
+  const [editUserPassword, setEditUserPassword] = useState('');
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [editUserDisplayName, setEditUserDisplayName] = useState('');
+  const [editUserRole, setEditUserRole] = useState<'Receptionist' | 'LabSpecialist' | 'Admin' | 'SuperAdmin'>('Receptionist');
+  const [editUserHospitalId, setEditUserHospitalId] = useState<number | ''>('');
+  const [editSpecialistGender, setEditSpecialistGender] = useState('Other');
+  const [pendingHospitalAction, setPendingHospitalAction] = useState<Hospital | null>(null);
+  const [pendingUserAction, setPendingUserAction] = useState<UserRecord | null>(null);
 
   const [formError, setFormError] = useState('');
   const [formLoading, setFormLoading] = useState(false);
@@ -98,18 +117,22 @@ export default function SuperAdminDashboard() {
     setFormError('');
     setFormLoading(true);
     try {
-      await apiClient.post('/super-admin/users', {
+      await frontendApi.createSuperAdminUser({
         email: userEmail,
         password: userPassword,
         display_name: userDisplayName,
         role: userRole,
         hospital_id: userHospitalId || null,
+        ...(userRole === 'LabSpecialist' ? { gender: specialistGender } : {}),
       });
       setUserEmail('');
       setUserPassword('');
       setUserDisplayName('');
       setUserRole('Receptionist');
       setUserHospitalId('');
+      setUserPassword('');
+      setShowPassword(false);
+      setSpecialistGender('Other');
       setShowUserForm(false);
       await fetchData();
     } catch (err: any) {
@@ -161,6 +184,152 @@ export default function SuperAdminDashboard() {
       console.error('Save LIMS config failed', err);
     }
     setLimsSaving(false);
+  };
+
+  const openEditUserModal = (record: UserRecord) => {
+    setEditingUser(record);
+    setEditUserEmail(record.email);
+    setEditUserPassword('');
+    setShowEditPassword(false);
+    setEditUserDisplayName(record.display_name);
+    setEditUserRole(record.role as 'Receptionist' | 'LabSpecialist' | 'Admin' | 'SuperAdmin');
+    setEditUserHospitalId(record.hospital_id ?? '');
+    setEditSpecialistGender('Other');
+    setFormError('');
+    setShowEditUserModal(true);
+  };
+
+  const handleEditUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingUser) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.updateSuperAdminUser(editingUser.id, {
+        email: editUserEmail,
+        display_name: editUserDisplayName,
+        role: editUserRole,
+        hospital_id: editUserHospitalId || null,
+        password: editUserPassword.trim() || undefined,
+        ...(editUserRole === 'LabSpecialist' ? { gender: editSpecialistGender } : {}),
+      });
+      setShowEditUserModal(false);
+      setEditingUser(null);
+      setEditUserPassword('');
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to update user');
+    }
+    setFormLoading(false);
+  };
+
+  const handleDeleteHospital = async () => {
+    if (!pendingHospitalAction) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.deleteSuperAdminHospital(pendingHospitalAction.id);
+      setPendingHospitalAction(null);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to delete hospital');
+    }
+    setFormLoading(false);
+  };
+
+  const handleDisableHospital = async () => {
+    if (!pendingHospitalAction) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.disableSuperAdminHospital(pendingHospitalAction.id);
+      setPendingHospitalAction(null);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to disable hospital');
+    }
+    setFormLoading(false);
+  };
+
+  const handleEnableHospital = async (hospitalId: number) => {
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.enableSuperAdminHospital(hospitalId);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to enable hospital');
+    }
+    setFormLoading(false);
+  };
+
+  const handleDeleteUser = async () => {
+    if (!pendingUserAction) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.deleteSuperAdminUser(pendingUserAction.id);
+      setPendingUserAction(null);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to delete user');
+    }
+    setFormLoading(false);
+  };
+
+  const handleDisableUser = async () => {
+    if (!pendingUserAction) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.disableSuperAdminUser(pendingUserAction.id);
+      setPendingUserAction(null);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to disable user');
+    }
+    setFormLoading(false);
+  };
+
+  const handleEnableUser = async (userId: number) => {
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.enableSuperAdminUser(userId);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to enable user');
+    }
+    setFormLoading(false);
+  };
+
+  const openEditHospitalModal = (record: Hospital) => {
+    setEditingHospital(record);
+    setEditHospitalName(record.name);
+    setEditHospitalCode(record.code);
+    setEditHospitalIsActive(record.is_active);
+    setFormError('');
+    setShowEditHospitalModal(true);
+  };
+
+  const handleEditHospital = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingHospital) return;
+    setFormError('');
+    setFormLoading(true);
+    try {
+      await frontendApi.updateSuperAdminHospital(editingHospital.id, {
+        name: editHospitalName,
+        code: editHospitalCode,
+        is_active: editHospitalIsActive,
+      });
+      setShowEditHospitalModal(false);
+      setEditingHospital(null);
+      await fetchData();
+    } catch (err: any) {
+      setFormError(err?.response?.data?.detail || 'Failed to update hospital');
+    }
+    setFormLoading(false);
   };
 
   const handleRegenerateKey = async () => {
@@ -348,6 +517,9 @@ export default function SuperAdminDashboard() {
                     <th className="text-left px-6 py-3 text-sm font-medium text-gray-500">
                       Status
                     </th>
+                    <th className="text-left px-6 py-3 text-sm font-medium text-gray-500">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -371,11 +543,42 @@ export default function SuperAdminDashboard() {
                           {h.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditHospitalModal(h)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            <Edit className="w-4 h-4" />
+                            Edit
+                          </button>
+                          {h.is_active ? (
+                            <button
+                              type="button"
+                              onClick={() => setPendingHospitalAction(h)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Delete / Disable
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleEnableHospital(h.id)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-green-200 px-3 py-1.5 text-sm text-green-700 hover:bg-green-50"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              Enable
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {hospitals.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-6 py-8 text-center text-gray-400">
+                      <td colSpan={5} className="px-6 py-8 text-center text-gray-400">
                         No hospitals yet
                       </td>
                     </tr>
@@ -561,14 +764,23 @@ export default function SuperAdminDashboard() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">
                       Password
                     </label>
-                    <input
-                      type="password"
-                      required
-                      minLength={6}
-                      value={userPassword}
-                      onChange={(e) => setUserPassword(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
-                    />
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        required
+                        minLength={6}
+                        value={userPassword}
+                        onChange={(e) => setUserPassword(e.target.value)}
+                        className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((value) => !value)}
+                        className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -587,7 +799,7 @@ export default function SuperAdminDashboard() {
                     </label>
                     <select
                       value={userRole}
-                      onChange={(e) => setUserRole(e.target.value)}
+                      onChange={(e) => setUserRole(e.target.value as 'Receptionist' | 'LabSpecialist' | 'Admin' | 'SuperAdmin')}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
                     >
                       <option value="Receptionist">Receptionist</option>
@@ -615,7 +827,28 @@ export default function SuperAdminDashboard() {
                       ))}
                     </select>
                   </div>
+                  {userRole === 'LabSpecialist' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Gender
+                      </label>
+                      <select
+                        value={specialistGender}
+                        onChange={(e) => setSpecialistGender(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                      >
+                        <option value="Other">Other</option>
+                        <option value="Male">Male</option>
+                        <option value="Female">Female</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
+                {userRole === 'LabSpecialist' && (
+                  <p className="text-xs text-gray-500">
+                    Shift times are optional here and will use backend defaults when omitted.
+                  </p>
+                )}
                 <div className="flex gap-3">
                   <button
                     type="submit"
@@ -654,6 +887,9 @@ export default function SuperAdminDashboard() {
                     <th className="text-left px-6 py-3 text-sm font-medium text-gray-500">
                       Status
                     </th>
+                    <th className="text-left px-6 py-3 text-sm font-medium text-gray-500">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -682,11 +918,42 @@ export default function SuperAdminDashboard() {
                           {u.is_active ? 'Active' : 'Inactive'}
                         </span>
                       </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openEditUserModal(u)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+                          >
+                            <Edit className="w-4 h-4" />
+                            Edit
+                          </button>
+                          {u.is_active ? (
+                            <button
+                              type="button"
+                              onClick={() => setPendingUserAction(u)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Delete / Disable
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void handleEnableUser(u.id)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-green-200 px-3 py-1.5 text-sm text-green-700 hover:bg-green-50"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              Enable
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   ))}
                   {users.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-6 py-8 text-center text-gray-400">
+                      <td colSpan={6} className="px-6 py-8 text-center text-gray-400">
                         No users yet
                       </td>
                     </tr>
@@ -697,6 +964,253 @@ export default function SuperAdminDashboard() {
           </div>
         )}
       </div>
+
+      {showEditUserModal && editingUser && (
+        <Modal onClose={() => setShowEditUserModal(false)} title={`Edit ${editingUser.display_name}`} widthClass="max-w-2xl">
+          <form onSubmit={handleEditUser} className="space-y-4">
+            {formError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">
+                {formError}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <input
+                  type="email"
+                  required
+                  value={editUserEmail}
+                  onChange={(e) => setEditUserEmail(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                <div className="relative">
+                  <input
+                    type={showEditPassword ? 'text' : 'password'}
+                    minLength={6}
+                    value={editUserPassword}
+                    onChange={(e) => setEditUserPassword(e.target.value)}
+                    placeholder="Leave blank to keep unchanged"
+                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowEditPassword((value) => !value)}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-gray-500 hover:text-gray-700"
+                  >
+                    {showEditPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">This sets a new password. The current password cannot be viewed.</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Display Name</label>
+                <input
+                  required
+                  value={editUserDisplayName}
+                  onChange={(e) => setEditUserDisplayName(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                <select
+                  value={editUserRole}
+                  onChange={(e) => setEditUserRole(e.target.value as 'Receptionist' | 'LabSpecialist' | 'Admin' | 'SuperAdmin')}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                >
+                  <option value="Receptionist">Receptionist</option>
+                  <option value="LabSpecialist">Lab Specialist</option>
+                  <option value="Admin">Admin</option>
+                  <option value="SuperAdmin">Super Admin</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Hospital</label>
+                <select
+                  value={editUserHospitalId}
+                  onChange={(e) => setEditUserHospitalId(e.target.value ? Number(e.target.value) : '')}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                >
+                  <option value="">None (SuperAdmin only)</option>
+                  {hospitals.map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.name} ({h.code})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {editUserRole === 'LabSpecialist' && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Gender</label>
+                  <select
+                    value={editSpecialistGender}
+                    onChange={(e) => setEditSpecialistGender(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+                  >
+                    <option value="Other">Other</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                  </select>
+                </div>
+              )}
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowEditUserModal(false)}
+                className="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={formLoading}
+                className="px-6 py-2 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1d68] disabled:opacity-50"
+              >
+                {formLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {showEditHospitalModal && editingHospital && (
+        <Modal onClose={() => setShowEditHospitalModal(false)} title={`Edit ${editingHospital.name}`} widthClass="max-w-xl">
+          <form onSubmit={handleEditHospital} className="space-y-4">
+            {formError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">
+                {formError}
+              </div>
+            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Hospital Name</label>
+              <input
+                required
+                value={editHospitalName}
+                onChange={(e) => setEditHospitalName(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Code</label>
+              <input
+                required
+                value={editHospitalCode}
+                onChange={(e) => setEditHospitalCode(e.target.value.toUpperCase())}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#5D2582] outline-none"
+              />
+            </div>
+            <label className="flex items-center gap-3 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={editHospitalIsActive}
+                onChange={(e) => setEditHospitalIsActive(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-[#5D2582] focus:ring-[#5D2582]"
+              />
+              Hospital is active
+            </label>
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowEditHospitalModal(false)}
+                className="px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={formLoading}
+                className="px-6 py-2 bg-[#5D2582] text-white rounded-lg hover:bg-[#4a1d68] disabled:opacity-50"
+              >
+                {formLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {pendingHospitalAction && (
+        <Modal onClose={() => setPendingHospitalAction(null)} title={`Delete or Disable ${pendingHospitalAction.name}`}>
+          {formError && (
+            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">
+              {formError}
+            </div>
+          )}
+          <p className="text-sm text-gray-600 mb-6">
+            Choose whether to remove this hospital and all related data, or disable it and keep the data.
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={() => setPendingHospitalAction(null)}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDisableHospital()}
+              disabled={formLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-amber-300 text-amber-800 rounded-lg hover:bg-amber-50 disabled:opacity-50"
+            >
+              <Ban className="w-4 h-4" />
+              Disable only
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteHospital()}
+              disabled={formLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete whole data
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {pendingUserAction && (
+        <Modal onClose={() => setPendingUserAction(null)} title={`Delete or Disable ${pendingUserAction.display_name}`}>
+          {formError && (
+            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg text-sm">
+              {formError}
+            </div>
+          )}
+          <p className="text-sm text-gray-600 mb-6">
+            Choose whether to permanently delete this user or disable the account and block login.
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button
+              type="button"
+              onClick={() => setPendingUserAction(null)}
+              className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDisableUser()}
+              disabled={formLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-amber-300 text-amber-800 rounded-lg hover:bg-amber-50 disabled:opacity-50"
+            >
+              <Ban className="w-4 h-4" />
+              Disable only
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDeleteUser()}
+              disabled={formLoading}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              Delete
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -166,6 +166,7 @@ def frontend_lab_group(session: Session, group: LabGroup) -> dict:
 def frontend_specialist(item: Specialist) -> dict:
     return {
         'id': f's{item.id}',
+        'user_id': item.user_id,
         'name': item.name,
         'gender': item.gender,
         'shift_start': item.shift_start.strftime('%H:%M'),
